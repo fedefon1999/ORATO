@@ -8,7 +8,10 @@ data class AudioFrameResult(
     val dbfs: Double,
     val clippedSampleCount: Int,
     val sampleCount: Int,
+    /** Actual frame duration derived from samples / sampleRate / channels. */
+    val durationMs: Double,
     val isSpeech: Boolean,
+    val vad: VadFrameResult,
 )
 
 /**
@@ -16,11 +19,12 @@ data class AudioFrameResult(
  * Delegates VAD to [VoiceActivityDetector]; RMS/dBFS/clipping to [PcmMath].
  */
 class AudioFrameAnalyzer(
-    sampleRateHz: Int,
+    private val sampleRateHz: Int,
     private val frameSampleCount: Int = PcmMath.frameSampleCount(sampleRateHz),
+    private val channelCount: Int = AudioMetricsConfig.CHANNEL_COUNT,
     private val vad: VoiceActivityDetector = VoiceActivityDetector(
         sampleRateHz = sampleRateHz,
-        frameSampleCount = frameSampleCount,
+        nominalFrameSampleCount = frameSampleCount,
     ),
     private val clippingThresholdRatio: Double = AudioMetricsConfig.CLIPPING_THRESHOLD_RATIO,
 ) {
@@ -30,19 +34,20 @@ class AudioFrameAnalyzer(
 
     fun isSpeech(): Boolean = vad.isSpeech()
 
+    fun vad(): VoiceActivityDetector = vad
+
     fun reset() {
         vad.reset()
     }
 
     /**
      * Analyzes one frame of PCM samples.
-     * @param samples source buffer
-     * @param offset start index
-     * @param length must equal [frameSampleCount] for normal operation; shorter
-     *        trailing frames are still analyzed for RMS/clipping but VAD uses them.
+     * Frame duration is computed from the actual [length] read, [sampleRateHz]
+     * and [channelCount] — never assumed equal to the nominal target duration.
      */
     fun analyze(samples: ShortArray, offset: Int, length: Int): AudioFrameResult {
         val usable = length.coerceAtLeast(0)
+        val durationMs = PcmMath.frameDurationMs(usable, sampleRateHz, channelCount)
         val rms = PcmMath.rms(samples, offset, usable)
         val dbfs = PcmMath.rmsToDbfs(rms)
         val clipPct = PcmMath.clippingPercent(
@@ -52,13 +57,29 @@ class AudioFrameAnalyzer(
             thresholdRatio = clippingThresholdRatio,
         )
         val clipped = ((clipPct / 100.0) * usable).toInt()
-        val speech = if (usable > 0) vad.processFrameDbfs(dbfs) else false
+        val vadResult = if (usable > 0) {
+            vad.processFrame(dbfs, durationMs)
+        } else {
+            VadFrameResult(
+                isSpeech = false,
+                vadState = vad.vadState(),
+                noiseFloorDbfs = vad.noiseFloorDbfs(),
+                speechOnThresholdDbfs = vad.speechOnThresholdDbfs(),
+                speechOffThresholdDbfs = vad.speechOffThresholdDbfs(),
+                currentSpeechSegmentMs = vad.currentSpeechSegmentMs(),
+                currentSilenceSegmentMs = vad.currentSilenceSegmentMs(),
+                enteredSpeech = false,
+                enteredSilence = false,
+            )
+        }
         return AudioFrameResult(
             rms = rms,
             dbfs = dbfs,
             clippedSampleCount = clipped,
             sampleCount = usable,
-            isSpeech = speech,
+            durationMs = durationMs,
+            isSpeech = vadResult.isSpeech,
+            vad = vadResult,
         )
     }
 }

@@ -156,10 +156,20 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         label = "Rapporto di parlato",
         value = audio.speechRatioPercent?.let { "%.0f%%".format(it) } ?: "—",
     )
-    ReportLine(
-        label = "Volume medio (parlato)",
-        value = audio.meanSpeechDbfs?.let { "%.1f dBFS".format(it) } ?: "—",
-    )
+    if (audio.meanSpeechDbfs == null) {
+        ReportLine(label = "Volume medio", value = "Dati insufficienti")
+    } else {
+        // Signed dBFS (typically negative). Never convert to a positive number.
+        ReportLine(
+            label = "Volume medio",
+            value = "Volume medio: %.1f dBFS".format(audio.meanSpeechDbfs),
+        )
+        Text(
+            text = "più vicino a 0 = più forte",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     ReportLine(
         label = "Variazione di volume",
         value = audio.volumeVariationStdDevDb?.let { "%.2f dB σ".format(it) } ?: "—",

@@ -93,6 +93,23 @@ object PcmMath {
     }
 
     /**
+     * Exact frame duration in milliseconds from the samples actually captured.
+     *
+     * `durationMs = sampleCount * 1000 / (sampleRateHz * channelCount)`
+     *
+     * For mono interleaved PCM, [sampleCount] is the number of samples read
+     * from [android.media.AudioRecord.read].
+     */
+    fun frameDurationMs(
+        sampleCount: Int,
+        sampleRateHz: Int,
+        channelCount: Int = AudioMetricsConfig.CHANNEL_COUNT,
+    ): Double {
+        if (sampleCount <= 0 || sampleRateHz <= 0 || channelCount <= 0) return 0.0
+        return sampleCount * 1_000.0 / (sampleRateHz.toDouble() * channelCount.toDouble())
+    }
+
+    /**
      * Population standard deviation of [values], or null when fewer than 2 values.
      * Returns 0.0 (never NaN) when variance underflows.
      */

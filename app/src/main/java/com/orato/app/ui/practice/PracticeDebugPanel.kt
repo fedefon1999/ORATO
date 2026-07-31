@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.orato.app.audio.AudioRecordingState
 import com.orato.app.audio.LiveAudioDebug
+import com.orato.app.audio.VadState
 import com.orato.app.metrics.HandDebugInfo
 import com.orato.app.metrics.LandmarkDebugInfo
 import com.orato.app.metrics.LiveBodyMetrics
@@ -233,14 +234,33 @@ private fun AudioDebugContent(debug: LiveAudioDebug) {
     )
     DebugLine("Sorgente audio", debug.audioSourceLabel ?: "—")
     DebugLine(
-        "Livello",
-        debug.currentDbfs?.let { "%.1f dBFS".format(it) } ?: "—",
+        "dBFS frame",
+        debug.rawFrameDbfs?.let { "%.1f dBFS".format(it) } ?: "—",
     )
     DebugLine(
         "Rumore di fondo",
         debug.noiseFloorDbfs?.let { "%.1f dBFS".format(it) } ?: "—",
     )
+    DebugLine(
+        "Soglia speech-on",
+        debug.speechOnThresholdDbfs?.let { "%.1f dBFS".format(it) } ?: "—",
+    )
+    DebugLine(
+        "Soglia speech-off",
+        debug.speechOffThresholdDbfs?.let { "%.1f dBFS".format(it) } ?: "—",
+    )
+    DebugLine("Stato VAD", vadStateLabelIt(debug.vadState))
     DebugLine("Parlato", if (debug.isSpeech) "sì" else "no")
+    DebugLine(
+        "Seg. parlato corrente",
+        formatDurationMmSs(debug.currentSpeechSegmentMs),
+    )
+    DebugLine(
+        "Seg. silenzio corrente",
+        formatDurationMmSs(debug.currentSilenceSegmentMs),
+    )
+    DebugLine("Seg. parlato finalizzati", debug.finalizedSpeechSegments.toString())
+    DebugLine("Pause interne finalizzate", debug.finalizedInternalPauses.toString())
     DebugLine("Durata catturata", formatDurationMmSs(debug.capturedDurationMs))
     DebugLine("Letture perse", debug.droppedReadCount.toString())
     val error = debug.errorMessage
@@ -248,6 +268,13 @@ private fun AudioDebugContent(debug: LiveAudioDebug) {
         DebugLine("Errore", error)
     }
 }
+
+private fun vadStateLabelIt(state: VadState): String =
+    when (state) {
+        VadState.Calibrating -> "Calibrazione"
+        VadState.Silence -> "Silenzio"
+        VadState.Speech -> "Parlato"
+    }
 
 @Composable
 private fun DebugLine(label: String, value: String) {

@@ -39,6 +39,15 @@ data class LiveAudioDebug(
     val capturedDurationMs: Long = 0L,
     val droppedReadCount: Int = 0,
     val errorMessage: String? = null,
+    // --- temporary VAD / segmentation debug ---
+    val rawFrameDbfs: Double? = null,
+    val speechOnThresholdDbfs: Double? = null,
+    val speechOffThresholdDbfs: Double? = null,
+    val vadState: VadState = VadState.Calibrating,
+    val currentSpeechSegmentMs: Long = 0L,
+    val currentSilenceSegmentMs: Long = 0L,
+    val finalizedSpeechSegments: Int = 0,
+    val finalizedInternalPauses: Int = 0,
 )
 
 /**
@@ -53,9 +62,15 @@ data class AudioSessionMetrics(
     val droppedReadCount: Int,
     val sampleRateHz: Int?,
     val audioSourceLabel: String?,
-    /** Speech time / captured time as a percentage (0–100), or null if insufficient. */
+    /**
+     * Speech time / captured time as a percentage (0–100), or null if insufficient.
+     * Speech time comes from finalized speech segments — never from total capture.
+     */
     val speechRatioPercent: Double?,
-    /** Mean dBFS over frames classified as speech, or null if insufficient. */
+    /**
+     * Mean dBFS over frames classified as speech, or null if no valid speech.
+     * Remains a signed dBFS value (typically negative); never converted to positive.
+     */
     val meanSpeechDbfs: Double?,
     /**
      * Standard deviation of speech-frame dBFS (volume variation).

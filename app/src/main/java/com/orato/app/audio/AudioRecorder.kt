@@ -330,7 +330,7 @@ class AudioRecorder(
         length: Int,
     ) {
         val result = frameAnalyzer.analyze(samples, offset, length)
-        sessionAcc.acceptFrame(result, frameAnalyzer.noiseFloorDbfs())
+        sessionAcc.acceptFrame(result)
         publishLive()
     }
 
@@ -380,7 +380,7 @@ class AudioRecorder(
         val source = audioSourceLabel
         val rate = sampleRateHz
 
-        if (completed && errorMessage == null && writer != null && acc != null) {
+            if (completed && errorMessage == null && writer != null && acc != null) {
             try {
                 writer.finalizeHeader()
                 writer.close()
@@ -388,6 +388,7 @@ class AudioRecorder(
                 AudioSessionCache.deleteQuietly(file)
                 _state.value = AudioRecordingState.Error
                 val msg = t.message ?: "Finalizzazione WAV fallita"
+                acc.finalizeOpenSegment()
                 _metrics.value = AudioSessionMetrics.recordingError(msg).copy(
                     capturedDurationMs = acc.capturedDurationMs(),
                     droppedReadCount = acc.droppedReadCount(),
@@ -404,6 +405,7 @@ class AudioRecorder(
                 )
                 return
             }
+            acc.finalizeOpenSegment()
             _state.value = AudioRecordingState.Completed
             val metrics = acc.buildMetrics(
                 state = AudioRecordingState.Completed,

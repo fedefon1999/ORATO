@@ -42,7 +42,8 @@ object AudioMetricsConfig {
     /**
      * Target analysis frame duration in milliseconds.
      * Actual frame sample count = round(sampleRate * FRAME_DURATION_MS / 1000).
-     * Stays in the 20–30 ms band at common rates (16 / 44.1 / 48 kHz).
+     * Per-frame duration is always derived from the samples actually read:
+     * `sampleCount * 1000 / (sampleRateHz * channelCount)`.
      */
     const val FRAME_DURATION_MS: Int = 20
 
@@ -72,28 +73,54 @@ object AudioMetricsConfig {
      * Initial period used only to estimate the noise floor before speech
      * decisions become active (milliseconds of successfully captured audio).
      */
-    const val NOISE_FLOOR_CALIBRATION_MS: Int = 300
+    const val NOISE_FLOOR_CALIBRATION_MS: Int = 400
 
     /**
-     * EMA alpha for adaptive noise-floor updates during non-speech frames.
-     * Closer to 0 → slower adaptation.
+     * EMA alpha when the observed level is **below** the current noise floor
+     * (fast downward adaptation). Applied only outside active speech.
      */
-    const val NOISE_FLOOR_ADAPT_ALPHA: Double = 0.05
+    const val NOISE_FLOOR_ADAPT_ALPHA_DOWN: Double = 0.20
 
     /**
-     * A frame is a speech *candidate* when its dBFS ≥ noiseFloor + margin.
+     * EMA alpha when the observed level is **above** the current noise floor
+     * during confirmed silence (slow upward adaptation toward ambient).
+     * Speech frames never raise the floor.
      */
-    const val SPEECH_MARGIN_DB: Double = 8.0
+    const val NOISE_FLOOR_ADAPT_ALPHA_UP: Double = 0.04
 
     /**
-     * Number of consecutive candidate frames required to enter speech (attack).
+     * Enter-speech margin (dB) above the noise floor.
+     * speech-on threshold = noiseFloor + [SPEECH_ON_MARGIN_DB].
+     */
+    const val SPEECH_ON_MARGIN_DB: Double = 10.0
+
+    /**
+     * Leave-speech margin (dB) above the noise floor.
+     * speech-off threshold = noiseFloor + [SPEECH_OFF_MARGIN_DB].
+     * Must be lower than [SPEECH_ON_MARGIN_DB] to avoid a stuck speech state.
+     */
+    const val SPEECH_OFF_MARGIN_DB: Double = 5.0
+
+    /**
+     * Additional release path: leave speech when level drops by at least this
+     * many dB below the recent speech-peak envelope for [SPEECH_RELEASE_FRAMES].
+     * Unlocks VAD after an overly quiet calibration where ambient still sits
+     * above noiseFloor + off-margin.
+     */
+    const val SPEECH_PEAK_DROP_DB: Double = 8.0
+
+    /** Decay applied to the speech-peak envelope each frame while in speech. */
+    const val SPEECH_PEAK_DECAY: Double = 0.995
+
+    /**
+     * Number of consecutive above-on frames required to enter speech (attack).
      * At 20 ms frames, 3 ≈ 60 ms.
      */
     const val SPEECH_ATTACK_FRAMES: Int = 3
 
     /**
-     * Number of consecutive non-candidate frames required to leave speech
-     * (release). At 20 ms frames, 8 ≈ 160 ms.
+     * Number of consecutive below-off (or peak-drop) frames required to leave
+     * speech (release). At 20 ms frames, 8 ≈ 160 ms.
      */
     const val SPEECH_RELEASE_FRAMES: Int = 8
 
@@ -105,8 +132,7 @@ object AudioMetricsConfig {
 
     /**
      * Internal silence gaps shorter than this (ms) between speech segments are
-     * not counted as approximate pauses (merged into surrounding speech context
-     * for pause reporting only — frame-level speech flags stay as computed).
+     * not counted as approximate pauses.
      */
     const val MIN_SILENCE_SEGMENT_MS: Int = 200
 

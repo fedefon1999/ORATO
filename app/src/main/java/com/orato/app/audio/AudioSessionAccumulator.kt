@@ -1,52 +1,78 @@
 package com.orato.app.audio
 
 /**
- * Accumulates per-frame analysis into immutable [AudioSessionMetrics].
+ * Kind of a finalized timeline segment.
+ */
+enum class AudioSegmentKind {
+    Speech,
+    Silence,
+}
+
+/**
+ * Immutable finalized speech or silence segment on the session timeline.
+ * Durations are summed from actual per-frame sample durations.
+ */
+data class AudioSegment(
+    val kind: AudioSegmentKind,
+    val startMs: Long,
+    val endMs: Long,
+) {
+    val durationMs: Long get() = (endMs - startMs).coerceAtLeast(0L)
+}
+
+/**
+ * Accumulates per-frame analysis into an explicit speech/silence timeline.
  *
- * Pause reporting rules:
- * - Leading silence before the first speech segment is ignored.
- * - Trailing silence after the final speech segment is ignored.
- * - Only internal silence gaps between speech segments count as approximate pauses.
- * - Gaps shorter than [AudioMetricsConfig.MIN_SILENCE_SEGMENT_MS] are not counted.
- * - Speech runs shorter than [AudioMetricsConfig.MIN_SPEECH_SEGMENT_MS] are dropped
- *   before pause / speech-ratio aggregation.
- *
- * Labels pauses as approximate because no transcript exists yet.
+ * Rules:
+ * - Speech duration accumulates only from frames classified as speech.
+ * - Silence duration accumulates only from non-speech frames.
+ * - Total recording duration is never used as speech duration.
+ * - Attack/release transitions finalize segments on the timeline.
+ * - Internal pauses = silence segments between two valid speech segments.
+ * - Leading and trailing silence are excluded from pause stats.
+ * - Pauses ≥ [AudioMetricsConfig.MIN_SILENCE_SEGMENT_MS] are kept;
+ *   pauses > [AudioMetricsConfig.LONG_PAUSE_THRESHOLD_MS] counted separately.
+ * - [finalizeOpenSegment] must be called when recording stops.
  */
 class AudioSessionAccumulator(
     private val sampleRateHz: Int,
     private val frameSampleCount: Int,
     private val config: AudioMetricsConfig = AudioMetricsConfig,
 ) {
-    private val frameDurationMs: Double =
-        frameSampleCount * 1_000.0 / sampleRateHz.toDouble()
-
     private var totalSamples: Long = 0L
     private var clippedSamples: Long = 0L
     private var droppedReads: Int = 0
-    private var speechFrameCount: Int = 0
-    private var totalFrameCount: Int = 0
+
+    private var speechDurationMs: Double = 0.0
+    private var silenceDurationMs: Double = 0.0
 
     private val speechDbfsLevels = mutableListOf<Double>()
+    private val finalizedSegments = mutableListOf<AudioSegment>()
 
-    // Raw frame-level speech flags for segment post-processing.
-    private val speechFlags = mutableListOf<Boolean>()
+    private var openKind: AudioSegmentKind? = null
+    private var openStartMs: Long = 0L
+    private var openDurationMs: Double = 0.0
+    private var timelineMs: Double = 0.0
+    private var finalized: Boolean = false
 
     private var lastDbfs: Double? = null
-    private var lastNoiseFloor: Double? = null
-    private var lastIsSpeech: Boolean = false
+    private var lastVad: VadFrameResult? = null
 
     fun reset() {
         totalSamples = 0L
         clippedSamples = 0L
         droppedReads = 0
-        speechFrameCount = 0
-        totalFrameCount = 0
+        speechDurationMs = 0.0
+        silenceDurationMs = 0.0
         speechDbfsLevels.clear()
-        speechFlags.clear()
+        finalizedSegments.clear()
+        openKind = null
+        openStartMs = 0L
+        openDurationMs = 0.0
+        timelineMs = 0.0
+        finalized = false
         lastDbfs = null
-        lastNoiseFloor = null
-        lastIsSpeech = false
+        lastVad = null
     }
 
     fun recordDroppedRead() {
@@ -57,47 +83,88 @@ class AudioSessionAccumulator(
 
     fun capturedDurationMs(): Long = PcmMath.durationMs(totalSamples, sampleRateHz)
 
+    fun speechDurationMs(): Long = speechDurationMs.toLong()
+
+    fun silenceDurationMs(): Long = silenceDurationMs.toLong()
+
+    fun finalizedSegments(): List<AudioSegment> = finalizedSegments.toList()
+
+    fun finalizedSpeechSegmentCount(): Int =
+        qualifiedSpeechSegments().size
+
+    fun finalizedInternalPauseCount(): Int =
+        computeInternalPauses(qualifiedSpeechSegments()).count
+
     fun liveSnapshot(
         state: AudioRecordingState,
         audioSourceLabel: String?,
         errorMessage: String? = null,
-    ): LiveAudioDebug =
-        LiveAudioDebug(
+    ): LiveAudioDebug {
+        val vad = lastVad
+        return LiveAudioDebug(
             state = state,
             sampleRateHz = sampleRateHz,
             audioSourceLabel = audioSourceLabel,
             currentDbfs = lastDbfs,
-            noiseFloorDbfs = lastNoiseFloor,
-            isSpeech = lastIsSpeech,
+            noiseFloorDbfs = vad?.noiseFloorDbfs,
+            isSpeech = vad?.isSpeech == true,
             capturedDurationMs = capturedDurationMs(),
             droppedReadCount = droppedReads,
             errorMessage = errorMessage,
+            rawFrameDbfs = lastDbfs,
+            speechOnThresholdDbfs = vad?.speechOnThresholdDbfs,
+            speechOffThresholdDbfs = vad?.speechOffThresholdDbfs,
+            vadState = vad?.vadState ?: VadState.Calibrating,
+            currentSpeechSegmentMs = vad?.currentSpeechSegmentMs ?: 0L,
+            currentSilenceSegmentMs = vad?.currentSilenceSegmentMs ?: 0L,
+            finalizedSpeechSegments = finalizedSpeechSegmentCount(),
+            finalizedInternalPauses = finalizedInternalPauseCount(),
         )
+    }
 
-    fun acceptFrame(result: AudioFrameResult, noiseFloorDbfs: Double) {
+    fun acceptFrame(result: AudioFrameResult) {
+        check(!finalized) { "acceptFrame after finalizeOpenSegment" }
         totalSamples += result.sampleCount
         clippedSamples += result.clippedSampleCount
-        totalFrameCount++
-        speechFlags.add(result.isSpeech)
         lastDbfs = result.dbfs
-        lastNoiseFloor = noiseFloorDbfs
-        lastIsSpeech = result.isSpeech
+        lastVad = result.vad
+
+        val duration = result.durationMs.coerceAtLeast(0.0)
+        if (duration <= 0.0) return
+
         if (result.isSpeech) {
-            speechFrameCount++
+            speechDurationMs += duration
             speechDbfsLevels.add(result.dbfs)
+            appendToOpen(AudioSegmentKind.Speech, duration)
+        } else {
+            silenceDurationMs += duration
+            appendToOpen(AudioSegmentKind.Silence, duration)
         }
     }
 
     /**
-     * Builds the immutable session metrics.
-     * @param keepMetrics when false (cancelled / failed), returns insufficient / error
+     * Closes any open speech/silence segment when recording stops.
+     * Idempotent.
+     */
+    fun finalizeOpenSegment() {
+        if (finalized) return
+        closeOpenSegment()
+        finalized = true
+    }
+
+    /**
+     * Builds the immutable session metrics from the finalized segment timeline.
      */
     fun buildMetrics(
         state: AudioRecordingState,
         audioSourceLabel: String?,
         errorMessage: String?,
     ): AudioSessionMetrics {
-        if (state == AudioRecordingState.Error || errorMessage != null && state != AudioRecordingState.Completed) {
+        finalizeOpenSegment()
+
+        if (state == AudioRecordingState.Error ||
+            (errorMessage != null && state != AudioRecordingState.Completed)
+        ) {
             return AudioSessionMetrics(
                 state = AudioRecordingState.Error,
                 inputQuality = AudioInputQuality.RECORDING_ERROR,
@@ -125,28 +192,27 @@ class AudioSessionAccumulator(
             0.0
         }
 
-        val segments = buildQualifiedSpeechSegments()
-        val speechMs = segments.sumOf { (start, end) ->
-            ((end - start) * frameDurationMs).toLong()
-        }
+        val speechSegments = qualifiedSpeechSegments()
+        val speechMs = speechSegments.sumOf { it.durationMs }
+        // Speech ratio from actual speech duration on the timeline — never raw capture.
         val speechRatio = if (durationMs > 0L) {
             speechMs.toDouble() / durationMs.toDouble()
         } else {
             0.0
         }
-        val pauses = computeInternalPauses(segments)
+        val pauses = computeInternalPauses(speechSegments)
 
-        val meanSpeech = if (speechDbfsLevels.isNotEmpty()) {
-            // Recompute mean only over frames that fall inside qualified segments
-            // is complex; use speech-frame levels collected during VAD latch.
-            // After min-duration filtering we still report mean of latched speech frames
-            // when qualified speech exists; otherwise null.
-            if (segments.isEmpty()) null else speechDbfsLevels.average()
-        } else {
-            null
+        val meanSpeech = when {
+            speechDbfsLevels.isEmpty() || speechSegments.isEmpty() -> null
+            else -> {
+                val avg = speechDbfsLevels.average()
+                if (avg.isFinite()) avg else null
+            }
         }
-
-        val variation = if (segments.isEmpty()) null else PcmMath.standardDeviation(speechDbfsLevels)
+        val variation = when {
+            speechSegments.isEmpty() -> null
+            else -> PcmMath.standardDeviation(speechDbfsLevels)
+        }
 
         val quality = classifyQuality(
             durationMs = durationMs,
@@ -156,8 +222,9 @@ class AudioSessionAccumulator(
             hasError = false,
         )
 
-        // TOO_QUIET / CLIPPING still expose metrics; only insufficient / error hide them.
-        val insufficient = quality == AudioInputQuality.INSUFFICIENT_AUDIO
+        val insufficient = quality == AudioInputQuality.INSUFFICIENT_AUDIO ||
+            meanSpeech == null ||
+            speechSegments.isEmpty()
 
         if (insufficient) {
             return AudioSessionMetrics(
@@ -200,6 +267,53 @@ class AudioSessionAccumulator(
         )
     }
 
+    private fun appendToOpen(kind: AudioSegmentKind, durationMs: Double) {
+        if (openKind == null) {
+            openKind = kind
+            openStartMs = timelineMs.toLong()
+            openDurationMs = durationMs
+            timelineMs += durationMs
+            return
+        }
+        if (openKind != kind) {
+            closeOpenSegment()
+            openKind = kind
+            openStartMs = timelineMs.toLong()
+            openDurationMs = durationMs
+            timelineMs += durationMs
+        } else {
+            openDurationMs += durationMs
+            timelineMs += durationMs
+        }
+    }
+
+    private fun closeOpenSegment() {
+        val kind = openKind ?: return
+        val endMs = openStartMs + openDurationMs.toLong()
+        if (openDurationMs > 0.0) {
+            finalizedSegments.add(
+                AudioSegment(
+                    kind = kind,
+                    startMs = openStartMs,
+                    endMs = endMs,
+                ),
+            )
+        }
+        openKind = null
+        openDurationMs = 0.0
+    }
+
+    /**
+     * Valid speech segments after dropping runs shorter than MIN_SPEECH_SEGMENT_MS.
+     * Adjacent speech segments separated only by sub-minimum silence are not merged
+     * here — pause filtering handles short gaps separately.
+     */
+    private fun qualifiedSpeechSegments(): List<AudioSegment> =
+        finalizedSegments.filter {
+            it.kind == AudioSegmentKind.Speech &&
+                it.durationMs >= config.MIN_SPEECH_SEGMENT_MS
+        }
+
     private data class PauseStats(
         val count: Int,
         val medianMs: Long?,
@@ -208,36 +322,17 @@ class AudioSessionAccumulator(
     )
 
     /**
-     * Returns qualified speech segments as inclusive-exclusive frame index pairs
-     * [start, end), after dropping runs shorter than MIN_SPEECH_SEGMENT_MS.
+     * Internal pauses = silence between consecutive qualified speech segments.
+     * Leading silence (before first speech) and trailing silence (after last)
+     * are excluded by construction.
      */
-    private fun buildQualifiedSpeechSegments(): List<Pair<Int, Int>> {
-        val raw = mutableListOf<Pair<Int, Int>>()
-        var i = 0
-        while (i < speechFlags.size) {
-            if (!speechFlags[i]) {
-                i++
-                continue
-            }
-            val start = i
-            while (i < speechFlags.size && speechFlags[i]) i++
-            val end = i
-            val durationMs = ((end - start) * frameDurationMs).toLong()
-            if (durationMs >= config.MIN_SPEECH_SEGMENT_MS) {
-                raw.add(start to end)
-            }
-        }
-        return raw
-    }
-
-    private fun computeInternalPauses(segments: List<Pair<Int, Int>>): PauseStats {
-        if (segments.size < 2) {
+    private fun computeInternalPauses(speechSegments: List<AudioSegment>): PauseStats {
+        if (speechSegments.size < 2) {
             return PauseStats(count = 0, medianMs = null, longestMs = null, over1500 = 0)
         }
         val durations = mutableListOf<Long>()
-        for (idx in 0 until segments.size - 1) {
-            val gapFrames = segments[idx + 1].first - segments[idx].second
-            val gapMs = (gapFrames * frameDurationMs).toLong()
+        for (idx in 0 until speechSegments.size - 1) {
+            val gapMs = speechSegments[idx + 1].startMs - speechSegments[idx].endMs
             if (gapMs >= config.MIN_SILENCE_SEGMENT_MS) {
                 durations.add(gapMs)
             }
