@@ -146,11 +146,14 @@ class PoseLandmarkerClient(
 
         val mapped = PoseLandmarkId.entries.mapNotNull { id ->
             val landmark = poseLandmarks.getOrNull(id.mediapipeIndex) ?: return@mapNotNull null
+            val presenceOpt = landmark.presence()
             id to NormalizedLandmarkPoint(
                 id = id,
                 x = landmark.x(),
                 y = landmark.y(),
                 visibility = landmark.visibility().orElse(0f),
+                // Only attach presence when MediaPipe provides it — never invent 0.
+                presence = if (presenceOpt.isPresent) presenceOpt.get() else null,
             )
         }.toMap()
 
