@@ -4,6 +4,7 @@ import com.orato.app.pose.NormalizedLandmarkPoint
 import com.orato.app.pose.PoseLandmarkId
 import com.orato.app.pose.UpperBodyPoseFrame
 import kotlin.math.abs
+import kotlin.math.max
 
 /**
  * Result of the shared landmark usability check.
@@ -100,17 +101,34 @@ data class TorsoValidation(
     val rightHip: LandmarkUsability,
     val shoulderWidth: Float?,
     val shoulderToHipVertical: Float?,
-)
+) {
+    /**
+     * Shoulder–hip quadrilateral, or null when any corner is missing.
+     * Order: left shoulder → right shoulder → right hip → left hip.
+     */
+    fun torsoPolygon(): List<Point2D>? {
+        val ls = leftShoulder.point ?: return null
+        val rs = rightShoulder.point ?: return null
+        val rh = rightHip.point ?: return null
+        val lh = leftHip.point ?: return null
+        return listOf(ls, rs, rh, lh)
+    }
+}
 
 /**
- * Raw hand visibility for one side (pre consecutive-gate).
+ * Conservative hand visibility assessment (pre consecutive-gate).
+ * Uncertain / ambiguous evidence always yields [rawVisible] = false.
  */
 data class HandValidation(
     val rawVisible: Boolean,
     val wrist: LandmarkUsability,
-    val elbow: LandmarkUsability,
     val validFingerCount: Int,
     val wristPoint: Point2D?,
+    val averageVisibility: Float?,
+    val boundingBoxSize: Float?,
+    val fingerSpread: Float?,
+    val insideTorsoRegion: Boolean,
+    val occludedByTorso: Boolean,
 )
 
 object PoseValidation {
@@ -173,76 +191,208 @@ object PoseValidation {
         )
     }
 
-    fun evaluateLeftHand(frame: UpperBodyPoseFrame): HandValidation =
-        evaluateHand(
-            frame = frame,
-            wristId = PoseLandmarkId.LEFT_WRIST,
-            elbowId = PoseLandmarkId.LEFT_ELBOW,
-            thumbId = PoseLandmarkId.LEFT_THUMB,
-            indexId = PoseLandmarkId.LEFT_INDEX,
-            pinkyId = PoseLandmarkId.LEFT_PINKY,
-        )
+    fun evaluateLeftHand(
+        frame: UpperBodyPoseFrame,
+        torso: TorsoValidation = evaluateTorso(frame),
+    ): HandValidation = evaluateHand(
+        frame = frame,
+        torso = torso,
+        wristId = PoseLandmarkId.LEFT_WRIST,
+        thumbId = PoseLandmarkId.LEFT_THUMB,
+        indexId = PoseLandmarkId.LEFT_INDEX,
+        pinkyId = PoseLandmarkId.LEFT_PINKY,
+    )
 
-    fun evaluateRightHand(frame: UpperBodyPoseFrame): HandValidation =
-        evaluateHand(
-            frame = frame,
-            wristId = PoseLandmarkId.RIGHT_WRIST,
-            elbowId = PoseLandmarkId.RIGHT_ELBOW,
-            thumbId = PoseLandmarkId.RIGHT_THUMB,
-            indexId = PoseLandmarkId.RIGHT_INDEX,
-            pinkyId = PoseLandmarkId.RIGHT_PINKY,
-        )
+    fun evaluateRightHand(
+        frame: UpperBodyPoseFrame,
+        torso: TorsoValidation = evaluateTorso(frame),
+    ): HandValidation = evaluateHand(
+        frame = frame,
+        torso = torso,
+        wristId = PoseLandmarkId.RIGHT_WRIST,
+        thumbId = PoseLandmarkId.RIGHT_THUMB,
+        indexId = PoseLandmarkId.RIGHT_INDEX,
+        pinkyId = PoseLandmarkId.RIGHT_PINKY,
+    )
 
     /**
-     * A hand is visually observable only when:
-     * - wrist is usable, in-frame, visibility ≥ [BodyMetricsConfig.WRIST_MIN_VISIBILITY];
-     * - elbow is usable (supporting evidence; in-frame not required);
-     * - ≥ [BodyMetricsConfig.HAND_MIN_FINGER_LANDMARKS] among thumb/index/pinky
-     *   are usable and in-frame at hand landmark visibility.
+     * Conservative hand visibility. MediaPipe inferred coordinates alone are
+     * never enough. Every ambiguous case returns not-visible.
      *
-     * Occluded / inferred wrists without reliable fingers do **not** count.
+     * Requires:
+     * 1. Wrist usable, in-frame, visibility ≥ [BodyMetricsConfig.WRIST_MIN_VISIBILITY]
+     * 2. ≥2 fingers usable, in-frame, visibility ≥ [BodyMetricsConfig.HAND_FINGER_MIN_VISIBILITY]
+     * 3. Average visibility of usable hand landmarks ≥ [BodyMetricsConfig.HAND_AVG_VISIBILITY_MIN]
+     * 4. Plausible geometry (finger spread + bounding-box size)
+     * 5. Hand centroid not classified as occluded behind the torso
      */
     private fun evaluateHand(
         frame: UpperBodyPoseFrame,
+        torso: TorsoValidation,
         wristId: PoseLandmarkId,
-        elbowId: PoseLandmarkId,
         thumbId: PoseLandmarkId,
         indexId: PoseLandmarkId,
         pinkyId: PoseLandmarkId,
     ): HandValidation {
+        val uncertain = HandValidation(
+            rawVisible = false,
+            wrist = LandmarkUsabilityEvaluator.fromFrame(
+                frame, wristId, BodyMetricsConfig.WRIST_MIN_VISIBILITY,
+            ),
+            validFingerCount = 0,
+            wristPoint = null,
+            averageVisibility = null,
+            boundingBoxSize = null,
+            fingerSpread = null,
+            insideTorsoRegion = false,
+            occludedByTorso = false,
+        )
+
         val wrist = LandmarkUsabilityEvaluator.fromFrame(
             frame = frame,
             id = wristId,
             minVisibility = BodyMetricsConfig.WRIST_MIN_VISIBILITY,
             requireInFrame = true,
         )
-        val elbow = LandmarkUsabilityEvaluator.fromFrame(
-            frame = frame,
-            id = elbowId,
-            minVisibility = BodyMetricsConfig.HAND_LANDMARK_MIN_VISIBILITY,
-            requireInFrame = false,
-        )
-        val fingers = listOf(thumbId, indexId, pinkyId).map { id ->
+        if (!wrist.usable || wrist.point == null) {
+            return uncertain.copy(wrist = wrist)
+        }
+
+        val fingerEvals = listOf(thumbId, indexId, pinkyId).map { id ->
             LandmarkUsabilityEvaluator.fromFrame(
                 frame = frame,
                 id = id,
-                minVisibility = BodyMetricsConfig.HAND_LANDMARK_MIN_VISIBILITY,
+                minVisibility = BodyMetricsConfig.HAND_FINGER_MIN_VISIBILITY,
                 requireInFrame = true,
             )
         }
-        val validFingerCount = fingers.count { it.usable }
+        val usableFingers = fingerEvals.filter { it.usable && it.point != null }
+        val validFingerCount = usableFingers.size
+        if (validFingerCount < BodyMetricsConfig.HAND_MIN_FINGER_LANDMARKS) {
+            // Fingers missing / weak — treat as not visible (behind back / occluded).
+            val weakOcclusion = isInsideExpandedTorso(wrist.point, torso.torsoPolygon())
+            return HandValidation(
+                rawVisible = false,
+                wrist = wrist,
+                validFingerCount = validFingerCount,
+                wristPoint = wrist.point,
+                averageVisibility = null,
+                boundingBoxSize = null,
+                fingerSpread = null,
+                insideTorsoRegion = weakOcclusion,
+                occludedByTorso = weakOcclusion,
+            )
+        }
+
+        val handPoints = listOf(wrist.point) + usableFingers.map { it.point!! }
+        val visibilities = listOf(wrist.visibility!!) + usableFingers.map { it.visibility!! }
+        val averageVisibility = visibilities.average().toFloat()
+        val fingerSpread = maxPairwiseDistance(usableFingers.map { it.point!! })
+        val boundingBoxSize = axisAlignedBBoxSize(handPoints)
+        val centroid = centroidOf(handPoints)
+        val polygon = torso.torsoPolygon()
+        val insideTorsoRegion = isInsideExpandedTorso(centroid, polygon) ||
+            isInsideExpandedTorso(wrist.point, polygon)
+
+        val geometryPlausible =
+            fingerSpread >= BodyMetricsConfig.HAND_MIN_FINGER_SPREAD &&
+                boundingBoxSize >= BodyMetricsConfig.HAND_MIN_BBOX_SIZE
+
+        val visibilityStrong =
+            averageVisibility >= BodyMetricsConfig.HAND_AVG_VISIBILITY_MIN
+
+        // Occlusion: landmarks within / immediately behind torso without strong
+        // open-hand evidence (typical behind-the-back inference).
+        val occludedByTorso = insideTorsoRegion && (
+            !visibilityStrong ||
+                !geometryPlausible ||
+                averageVisibility < BodyMetricsConfig.WRIST_MIN_VISIBILITY
+            )
+
         val rawVisible =
-            wrist.usable &&
-                elbow.usable &&
-                validFingerCount >= BodyMetricsConfig.HAND_MIN_FINGER_LANDMARKS
+            visibilityStrong &&
+                geometryPlausible &&
+                !occludedByTorso
 
         return HandValidation(
             rawVisible = rawVisible,
             wrist = wrist,
-            elbow = elbow,
             validFingerCount = validFingerCount,
             wristPoint = wrist.point,
+            averageVisibility = averageVisibility,
+            boundingBoxSize = boundingBoxSize,
+            fingerSpread = fingerSpread,
+            insideTorsoRegion = insideTorsoRegion,
+            occludedByTorso = occludedByTorso,
         )
+    }
+
+    /**
+     * Point-in-polygon with a uniform expansion of the torso quadrilateral
+     * (shoulders + hips) so “immediately behind” the silhouette is covered.
+     */
+    fun isInsideExpandedTorso(point: Point2D?, polygon: List<Point2D>?): Boolean {
+        if (point == null || polygon == null || polygon.size < 3) return false
+        val margin = BodyMetricsConfig.TORSO_OCCLUSION_MARGIN
+        val expanded = expandPolygon(polygon, margin)
+        return pointInPolygon(point, expanded)
+    }
+
+    fun expandPolygon(polygon: List<Point2D>, margin: Float): List<Point2D> {
+        val cx = polygon.map { it.x }.average().toFloat()
+        val cy = polygon.map { it.y }.average().toFloat()
+        return polygon.map { p ->
+            val dx = p.x - cx
+            val dy = p.y - cy
+            val len = kotlin.math.hypot(dx, dy).coerceAtLeast(1e-4f)
+            Point2D(
+                x = p.x + margin * dx / len,
+                y = p.y + margin * dy / len,
+            )
+        }
+    }
+
+    /** Ray-casting point-in-polygon (inclusive edges via even-odd fill). */
+    fun pointInPolygon(point: Point2D, polygon: List<Point2D>): Boolean {
+        var inside = false
+        var j = polygon.lastIndex
+        for (i in polygon.indices) {
+            val pi = polygon[i]
+            val pj = polygon[j]
+            val intersect =
+                ((pi.y > point.y) != (pj.y > point.y)) &&
+                    (point.x < (pj.x - pi.x) * (point.y - pi.y) /
+                        (pj.y - pi.y + 1e-12f) + pi.x)
+            if (intersect) inside = !inside
+            j = i
+        }
+        return inside
+    }
+
+    fun maxPairwiseDistance(points: List<Point2D>): Float {
+        if (points.size < 2) return 0f
+        var best = 0f
+        for (i in points.indices) {
+            for (k in i + 1 until points.size) {
+                best = max(best, points[i].distanceTo(points[k]))
+            }
+        }
+        return best
+    }
+
+    fun axisAlignedBBoxSize(points: List<Point2D>): Float {
+        if (points.isEmpty()) return 0f
+        val minX = points.minOf { it.x }
+        val maxX = points.maxOf { it.x }
+        val minY = points.minOf { it.y }
+        val maxY = points.maxOf { it.y }
+        return max(maxX - minX, maxY - minY)
+    }
+
+    fun centroidOf(points: List<Point2D>): Point2D {
+        val cx = points.map { it.x }.average().toFloat()
+        val cy = points.map { it.y }.average().toFloat()
+        return Point2D(cx, cy)
     }
 }
 
@@ -291,10 +441,11 @@ class TorsoHysteresis(
 }
 
 /**
- * Consecutive-result gate for hand visibility accumulation.
+ * Consecutive-result gate for hand visibility.
  *
- * - Turns ON after [streakOn] consecutive valid results.
- * - Turns OFF after [streakOff] consecutive invalid results.
+ * - Turns ON after [streakOn] consecutive valid results (default 4).
+ * - Turns OFF after [streakOff] consecutive invalid results (default 1 =
+ *   immediately false on occlusion / missing fingers / weak visibility).
  */
 class ConsecutiveVisibilityGate(
     private val streakOn: Int = BodyMetricsConfig.HAND_VISIBLE_STREAK_ON,

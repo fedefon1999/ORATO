@@ -296,8 +296,8 @@ private fun LiveMetricsDebugPanel(
         )
         DebugLine("L-fingers", metrics.leftValidFingerCount.toString())
         DebugLine("R-fingers", metrics.rightValidFingerCount.toString())
-        DebugLine("L-hand", if (metrics.leftHandVisible) "yes" else "no")
-        DebugLine("R-hand", if (metrics.rightHandVisible) "yes" else "no")
+        DebugLine("L-hand", handDebug(metrics.leftHand))
+        DebugLine("R-hand", handDebug(metrics.rightHand))
         DebugLine(
             "tilt",
             metrics.shoulderTilt?.let { "%.3f".format(it) } ?: "—",
@@ -313,6 +313,16 @@ private fun landmarkDebug(info: com.orato.app.metrics.LandmarkDebugInfo): String
     val vis = info.visibility?.let { "%.2f".format(it) } ?: "—"
     val frame = if (info.inFrame) "in" else "out"
     return "$vis/$frame"
+}
+
+private fun handDebug(info: com.orato.app.metrics.HandDebugInfo): String {
+    val avg = info.averageVisibility?.let { "%.2f".format(it) } ?: "—"
+    val box = info.boundingBoxSize?.let { "%.3f".format(it) } ?: "—"
+    val spread = info.fingerSpread?.let { "%.3f".format(it) } ?: "—"
+    val inside = if (info.insideTorsoRegion) "inT" else "outT"
+    val occ = if (info.occludedByTorso) "occ" else "clear"
+    val vis = if (info.handVisible) "vis" else "hide"
+    return "$vis avg=$avg box=$box spr=$spread $inside $occ"
 }
 
 @Composable

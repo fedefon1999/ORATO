@@ -19,6 +19,20 @@ data class LandmarkDebugInfo(
 )
 
 /**
+ * Per-hand debug snapshot for conservative visibility validation.
+ */
+data class HandDebugInfo(
+    val averageVisibility: Float? = null,
+    val boundingBoxSize: Float? = null,
+    val fingerSpread: Float? = null,
+    val insideTorsoRegion: Boolean = false,
+    val occludedByTorso: Boolean = false,
+    val handVisible: Boolean = false,
+    val validFingerCount: Int = 0,
+    val wristVisibility: Float? = null,
+)
+
+/**
  * Live per-frame debug snapshot for the practice overlay panel.
  * Raw measurements stay separate from session presentation scores.
  */
@@ -43,6 +57,8 @@ data class LiveBodyMetrics(
     val torsoValid: Boolean = false,
     val leftHandVisible: Boolean = false,
     val rightHandVisible: Boolean = false,
+    val leftHand: HandDebugInfo = HandDebugInfo(),
+    val rightHand: HandDebugInfo = HandDebugInfo(),
 )
 
 /**

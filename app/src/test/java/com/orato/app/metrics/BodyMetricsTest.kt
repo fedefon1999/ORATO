@@ -197,20 +197,72 @@ class PoseValidationTest {
             rightShoulder = MetricsTestFixtures.pt(0.50f, 0.35f),
             leftHip = MetricsTestFixtures.pt(0.35f, 0.70f),
             rightHip = MetricsTestFixtures.pt(0.45f, 0.70f),
-            leftWrist = MetricsTestFixtures.pt(0.25f, 0.55f, visibility = 0.95f),
-            leftElbow = MetricsTestFixtures.pt(0.28f, 0.45f),
+            leftWrist = MetricsTestFixtures.pt(0.20f, 0.55f, visibility = 0.95f),
             // No finger landmarks → behind-back / occluded prediction.
         )
         assertFalse(PoseValidation.evaluateLeftHand(frame).rawVisible)
     }
 
     @Test
-    fun wristPlusReliableFingers_makesHandVisible() {
+    fun clearlyOpenHandInFrontOfTorso_isVisible() {
         val frame = MetricsTestFixtures.validTorsoWithHandsFrame()
         val left = PoseValidation.evaluateLeftHand(frame)
         assertTrue(left.rawVisible)
+        assertFalse(left.occludedByTorso)
         assertTrue(left.validFingerCount >= 2)
         assertTrue(PoseValidation.evaluateRightHand(frame).rawVisible)
+    }
+
+    @Test
+    fun bothHandsBehindBack_areNotVisible() {
+        val frame = MetricsTestFixtures.bothHandsBehindBackFrame()
+        assertFalse(PoseValidation.evaluateLeftHand(frame).rawVisible)
+        assertFalse(PoseValidation.evaluateRightHand(frame).rawVisible)
+        assertTrue(PoseValidation.evaluateLeftHand(frame).occludedByTorso)
+        assertTrue(PoseValidation.evaluateRightHand(frame).occludedByTorso)
+    }
+
+    @Test
+    fun oneHandBehindBack_onlyThatHandIsNotVisible() {
+        val frame = MetricsTestFixtures.leftHandBehindBackFrame()
+        assertFalse(PoseValidation.evaluateLeftHand(frame).rawVisible)
+        assertTrue(PoseValidation.evaluateRightHand(frame).rawVisible)
+    }
+
+    @Test
+    fun collapsedInferredFingerGeometry_isNotVisible() {
+        val frame = MetricsTestFixtures.collapsedHandFrame()
+        val left = PoseValidation.evaluateLeftHand(frame)
+        assertFalse(left.rawVisible)
+        assertTrue(
+            (left.fingerSpread ?: 0f) < BodyMetricsConfig.HAND_MIN_FINGER_SPREAD ||
+                (left.boundingBoxSize ?: 0f) < BodyMetricsConfig.HAND_MIN_BBOX_SIZE ||
+                left.occludedByTorso,
+        )
+    }
+
+    @Test
+    fun wristInsideTorsoWithWeakFingerEvidence_isNotVisible() {
+        val frame = MetricsTestFixtures.wristInsideTorsoWeakFingersFrame()
+        val left = PoseValidation.evaluateLeftHand(frame)
+        assertFalse(left.rawVisible)
+        assertTrue(left.insideTorsoRegion)
+    }
+
+    @Test
+    fun uncertainEvidence_isNotVisible() {
+        // Wrist barely above old threshold but below 0.80.
+        val frame = MetricsTestFixtures.frame(
+            leftShoulder = MetricsTestFixtures.pt(0.30f, 0.35f),
+            rightShoulder = MetricsTestFixtures.pt(0.50f, 0.35f),
+            leftHip = MetricsTestFixtures.pt(0.35f, 0.70f),
+            rightHip = MetricsTestFixtures.pt(0.45f, 0.70f),
+            leftWrist = MetricsTestFixtures.pt(0.18f, 0.50f, visibility = 0.72f),
+            leftThumb = MetricsTestFixtures.pt(0.14f, 0.48f, visibility = 0.72f),
+            leftIndex = MetricsTestFixtures.pt(0.16f, 0.55f, visibility = 0.72f),
+            leftPinky = MetricsTestFixtures.pt(0.20f, 0.52f, visibility = 0.72f),
+        )
+        assertFalse(PoseValidation.evaluateLeftHand(frame).rawVisible)
     }
 
     @Test
@@ -220,11 +272,10 @@ class PoseValidationTest {
             rightShoulder = MetricsTestFixtures.pt(0.50f, 0.35f),
             leftHip = MetricsTestFixtures.pt(0.35f, 0.70f),
             rightHip = MetricsTestFixtures.pt(0.45f, 0.70f),
-            leftWrist = MetricsTestFixtures.pt(0.25f, 0.55f, visibility = 0.95f),
-            leftElbow = MetricsTestFixtures.pt(0.28f, 0.45f),
-            leftThumb = MetricsTestFixtures.pt(0.22f, 0.58f, visibility = 0.2f),
-            leftIndex = MetricsTestFixtures.pt(0.24f, 0.60f, visibility = 0.2f),
-            leftPinky = MetricsTestFixtures.pt(0.27f, 0.59f, visibility = 0.2f),
+            leftWrist = MetricsTestFixtures.pt(0.20f, 0.55f, visibility = 0.95f),
+            leftThumb = MetricsTestFixtures.pt(0.16f, 0.52f, visibility = 0.2f),
+            leftIndex = MetricsTestFixtures.pt(0.18f, 0.60f, visibility = 0.2f),
+            leftPinky = MetricsTestFixtures.pt(0.22f, 0.56f, visibility = 0.2f),
         )
         assertFalse(PoseValidation.evaluateLeftHand(frame).rawVisible)
     }
@@ -237,10 +288,9 @@ class PoseValidationTest {
             leftHip = MetricsTestFixtures.pt(0.35f, 0.70f),
             rightHip = MetricsTestFixtures.pt(0.45f, 0.70f),
             leftWrist = MetricsTestFixtures.pt(-0.05f, 0.55f, visibility = 0.95f),
-            leftElbow = MetricsTestFixtures.pt(0.28f, 0.45f),
-            leftThumb = MetricsTestFixtures.pt(0.22f, 0.58f),
-            leftIndex = MetricsTestFixtures.pt(0.24f, 0.60f),
-            leftPinky = MetricsTestFixtures.pt(0.27f, 0.59f),
+            leftThumb = MetricsTestFixtures.pt(0.16f, 0.52f),
+            leftIndex = MetricsTestFixtures.pt(0.18f, 0.60f),
+            leftPinky = MetricsTestFixtures.pt(0.22f, 0.56f),
         )
         assertFalse(PoseValidation.evaluateLeftHand(outWrist).rawVisible)
 
@@ -249,11 +299,10 @@ class PoseValidationTest {
             rightShoulder = MetricsTestFixtures.pt(0.50f, 0.35f),
             leftHip = MetricsTestFixtures.pt(0.35f, 0.70f),
             rightHip = MetricsTestFixtures.pt(0.45f, 0.70f),
-            leftWrist = MetricsTestFixtures.pt(0.25f, 0.55f, visibility = 0.95f),
-            leftElbow = MetricsTestFixtures.pt(0.28f, 0.45f),
-            leftThumb = MetricsTestFixtures.pt(1.05f, 0.58f),
+            leftWrist = MetricsTestFixtures.pt(0.20f, 0.55f, visibility = 0.95f),
+            leftThumb = MetricsTestFixtures.pt(1.05f, 0.52f),
             leftIndex = MetricsTestFixtures.pt(1.08f, 0.60f),
-            leftPinky = MetricsTestFixtures.pt(1.10f, 0.59f),
+            leftPinky = MetricsTestFixtures.pt(1.10f, 0.56f),
         )
         assertFalse(PoseValidation.evaluateLeftHand(outFingers).rawVisible)
     }
@@ -321,24 +370,36 @@ class BodyMetricsEngineTest {
     }
 
     @Test
-    fun handGate_requiresConsecutiveVisibleResults() {
+    fun handGate_requiresFourConsecutiveVisibleResults() {
         val engine = BodyMetricsEngine()
         engine.reset()
         val withHands = MetricsTestFixtures.validTorsoWithHandsFrame()
 
-        engine.processFrame(withHands)
-        assertFalse(engine.liveMetrics().leftHandVisible)
+        repeat(3) {
+            engine.processFrame(withHands)
+            assertFalse(engine.liveMetrics().leftHandVisible)
+        }
         assertEquals(0, engine.debugCounters().oneHandVisibleFrames)
-
-        engine.processFrame(withHands)
-        assertFalse(engine.liveMetrics().leftHandVisible)
 
         engine.processFrame(withHands)
         assertTrue(engine.liveMetrics().leftHandVisible)
         assertTrue(engine.liveMetrics().rightHandVisible)
-        // Third consecutive gated frame while torso raw-valid → counted.
         assertEquals(1, engine.debugCounters().oneHandVisibleFrames)
         assertEquals(1, engine.debugCounters().twoHandsVisibleFrames)
+    }
+
+    @Test
+    fun handVisible_clearsImmediatelyOnOcclusion() {
+        val engine = BodyMetricsEngine()
+        engine.reset()
+        val open = MetricsTestFixtures.validTorsoWithHandsFrame()
+        repeat(4) { engine.processFrame(open) }
+        assertTrue(engine.liveMetrics().leftHandVisible)
+
+        engine.processFrame(MetricsTestFixtures.bothHandsBehindBackFrame())
+        assertFalse(engine.liveMetrics().leftHandVisible)
+        assertFalse(engine.liveMetrics().rightHandVisible)
+        assertTrue(engine.liveMetrics().leftHand.occludedByTorso)
     }
 
     @Test
@@ -350,10 +411,8 @@ class BodyMetricsEngineTest {
             rightShoulder = MetricsTestFixtures.pt(0.50f, 0.35f),
             leftHip = MetricsTestFixtures.pt(0.35f, 0.70f),
             rightHip = MetricsTestFixtures.pt(0.45f, 0.70f),
-            leftWrist = MetricsTestFixtures.pt(0.25f, 0.55f, visibility = 0.95f),
-            rightWrist = MetricsTestFixtures.pt(0.55f, 0.55f, visibility = 0.95f),
-            leftElbow = MetricsTestFixtures.pt(0.28f, 0.45f),
-            rightElbow = MetricsTestFixtures.pt(0.52f, 0.45f),
+            leftWrist = MetricsTestFixtures.pt(0.20f, 0.55f, visibility = 0.95f),
+            rightWrist = MetricsTestFixtures.pt(0.60f, 0.55f, visibility = 0.95f),
         )
         repeat(10) { engine.processFrame(wristsOnly) }
         assertEquals(0, engine.debugCounters().oneHandVisibleFrames)
@@ -365,28 +424,10 @@ class BodyMetricsEngineTest {
         val engine = BodyMetricsEngine()
         engine.reset()
         val base = MetricsTestFixtures.validTorsoWithHandsFrame()
-        // Keep in-frame while teleporting laterally.
-        val jumped = MetricsTestFixtures.frame(
-            leftShoulder = MetricsTestFixtures.pt(0.60f, 0.35f),
-            rightShoulder = MetricsTestFixtures.pt(0.80f, 0.35f),
-            leftHip = MetricsTestFixtures.pt(0.65f, 0.70f),
-            rightHip = MetricsTestFixtures.pt(0.75f, 0.70f),
-            leftElbow = MetricsTestFixtures.pt(0.58f, 0.45f),
-            rightElbow = MetricsTestFixtures.pt(0.82f, 0.45f),
-            leftWrist = MetricsTestFixtures.pt(0.55f, 0.55f, visibility = 0.9f),
-            rightWrist = MetricsTestFixtures.pt(0.85f, 0.55f, visibility = 0.9f),
-            leftThumb = MetricsTestFixtures.pt(0.53f, 0.58f),
-            leftIndex = MetricsTestFixtures.pt(0.54f, 0.60f),
-            leftPinky = MetricsTestFixtures.pt(0.56f, 0.59f),
-            rightThumb = MetricsTestFixtures.pt(0.87f, 0.58f),
-            rightIndex = MetricsTestFixtures.pt(0.86f, 0.60f),
-            rightPinky = MetricsTestFixtures.pt(0.84f, 0.59f),
-        )
-        // Open hand gates then jump.
-        repeat(3) { engine.processFrame(base) }
+        val jumped = MetricsTestFixtures.validTorsoWithHandsFrame(offsetX = 0.30f)
+        repeat(4) { engine.processFrame(base) }
         val swayBefore = engine.debugCounters().swaySampleCount
         engine.processFrame(jumped)
-        // Jump frame excluded from sway/gesture increments beyond baseline chain.
         assertEquals(swayBefore, engine.debugCounters().swaySampleCount)
     }
 
@@ -394,9 +435,8 @@ class BodyMetricsEngineTest {
     fun acceptsSmallMotion_forStabilityAndGesture() {
         val engine = BodyMetricsEngine()
         engine.reset()
-        // Hand gate needs 3 consecutive visible frames; gesture needs one more
-        // accepted delta after the gate opens.
-        repeat(5) { i ->
+        // Hand gate needs 4 consecutive visible frames; gesture needs a delta after.
+        repeat(6) { i ->
             val dx = i * 0.002f
             engine.processFrame(MetricsTestFixtures.validTorsoWithHandsFrame(offsetX = dx))
         }
@@ -517,16 +557,69 @@ object MetricsTestFixtures {
         rightShoulder = pt(0.50f + offsetX, 0.35f),
         leftHip = pt(0.35f + offsetX, 0.70f),
         rightHip = pt(0.45f + offsetX, 0.70f),
-        leftElbow = pt(0.28f + offsetX, 0.45f),
-        rightElbow = pt(0.52f + offsetX, 0.45f),
-        leftWrist = pt(0.25f + offsetX, 0.55f, visibility = 0.9f),
-        rightWrist = pt(0.55f + offsetX, 0.55f, visibility = 0.9f),
-        leftThumb = pt(0.22f + offsetX, 0.58f),
-        leftIndex = pt(0.24f + offsetX, 0.60f),
-        leftPinky = pt(0.27f + offsetX, 0.59f),
-        rightThumb = pt(0.58f + offsetX, 0.58f),
-        rightIndex = pt(0.56f + offsetX, 0.60f),
-        rightPinky = pt(0.53f + offsetX, 0.59f),
+        // Hands clearly beside the torso with open finger geometry.
+        leftWrist = pt(0.18f + offsetX, 0.50f, visibility = 0.92f),
+        rightWrist = pt(0.62f + offsetX, 0.50f, visibility = 0.92f),
+        leftThumb = pt(0.12f + offsetX, 0.46f, visibility = 0.88f),
+        leftIndex = pt(0.14f + offsetX, 0.58f, visibility = 0.88f),
+        leftPinky = pt(0.22f + offsetX, 0.54f, visibility = 0.88f),
+        rightThumb = pt(0.68f + offsetX, 0.46f, visibility = 0.88f),
+        rightIndex = pt(0.66f + offsetX, 0.58f, visibility = 0.88f),
+        rightPinky = pt(0.58f + offsetX, 0.54f, visibility = 0.88f),
+    )
+
+    /** Both wrists + collapsed fingers inferred inside the torso silhouette. */
+    fun bothHandsBehindBackFrame(): UpperBodyPoseFrame = frame(
+        leftShoulder = pt(0.30f, 0.35f),
+        rightShoulder = pt(0.50f, 0.35f),
+        leftHip = pt(0.35f, 0.70f),
+        rightHip = pt(0.45f, 0.70f),
+        // High enough visibility to look “detected”, but collapsed inside torso.
+        leftWrist = pt(0.38f, 0.52f, visibility = 0.85f),
+        rightWrist = pt(0.42f, 0.52f, visibility = 0.85f),
+        leftThumb = pt(0.375f, 0.515f, visibility = 0.80f),
+        leftIndex = pt(0.380f, 0.520f, visibility = 0.80f),
+        leftPinky = pt(0.385f, 0.525f, visibility = 0.80f),
+        rightThumb = pt(0.415f, 0.515f, visibility = 0.80f),
+        rightIndex = pt(0.420f, 0.520f, visibility = 0.80f),
+        rightPinky = pt(0.425f, 0.525f, visibility = 0.80f),
+    )
+
+    fun leftHandBehindBackFrame(): UpperBodyPoseFrame = frame(
+        leftShoulder = pt(0.30f, 0.35f),
+        rightShoulder = pt(0.50f, 0.35f),
+        leftHip = pt(0.35f, 0.70f),
+        rightHip = pt(0.45f, 0.70f),
+        leftWrist = pt(0.40f, 0.52f, visibility = 0.85f),
+        leftThumb = pt(0.395f, 0.515f, visibility = 0.80f),
+        leftIndex = pt(0.400f, 0.520f, visibility = 0.80f),
+        leftPinky = pt(0.405f, 0.525f, visibility = 0.80f),
+        rightWrist = pt(0.62f, 0.50f, visibility = 0.92f),
+        rightThumb = pt(0.68f, 0.46f, visibility = 0.88f),
+        rightIndex = pt(0.66f, 0.58f, visibility = 0.88f),
+        rightPinky = pt(0.58f, 0.54f, visibility = 0.88f),
+    )
+
+    fun collapsedHandFrame(): UpperBodyPoseFrame = frame(
+        leftShoulder = pt(0.30f, 0.35f),
+        rightShoulder = pt(0.50f, 0.35f),
+        leftHip = pt(0.35f, 0.70f),
+        rightHip = pt(0.45f, 0.70f),
+        leftWrist = pt(0.18f, 0.50f, visibility = 0.90f),
+        leftThumb = pt(0.181f, 0.501f, visibility = 0.85f),
+        leftIndex = pt(0.182f, 0.502f, visibility = 0.85f),
+        leftPinky = pt(0.183f, 0.503f, visibility = 0.85f),
+    )
+
+    fun wristInsideTorsoWeakFingersFrame(): UpperBodyPoseFrame = frame(
+        leftShoulder = pt(0.30f, 0.35f),
+        rightShoulder = pt(0.50f, 0.35f),
+        leftHip = pt(0.35f, 0.70f),
+        rightHip = pt(0.45f, 0.70f),
+        leftWrist = pt(0.40f, 0.50f, visibility = 0.82f),
+        leftThumb = pt(0.39f, 0.49f, visibility = 0.60f),
+        leftIndex = pt(0.41f, 0.51f, visibility = 0.60f),
+        leftPinky = pt(0.40f, 0.52f, visibility = 0.60f),
     )
 
     fun frame(

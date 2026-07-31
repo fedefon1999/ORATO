@@ -36,12 +36,23 @@ object BodyMetricsConfig {
 
     /**
      * Minimum wrist visibility for hand-visible decisions.
-     * A predicted wrist alone is not enough; fingers must also pass.
+     * Inferred wrists without strong finger evidence never count as visible.
      */
-    const val WRIST_MIN_VISIBILITY: Float = 0.75f
+    const val WRIST_MIN_VISIBILITY: Float = 0.80f
 
     /**
-     * Minimum visibility for supporting hand landmarks (elbow, thumb, index, pinky).
+     * Minimum visibility for each usable finger landmark (thumb / index / pinky).
+     */
+    const val HAND_FINGER_MIN_VISIBILITY: Float = 0.75f
+
+    /**
+     * Average visibility of usable hand landmarks (wrist + qualifying fingers)
+     * must reach this floor. Uncertain hands stay NOT visible.
+     */
+    const val HAND_AVG_VISIBILITY_MIN: Float = 0.78f
+
+    /**
+     * Legacy alias kept for elbow / supporting checks outside the strict hand rule.
      */
     const val HAND_LANDMARK_MIN_VISIBILITY: Float = 0.65f
 
@@ -68,6 +79,12 @@ object BodyMetricsConfig {
      */
     const val MIN_SHOULDER_TO_HIP_VERTICAL: Float = 0.12f
 
+    /**
+     * Expand the shoulder–hip torso polygon by this normalized margin when
+     * testing “inside / immediately behind” the torso for occlusion.
+     */
+    const val TORSO_OCCLUSION_MARGIN: Float = 0.04f
+
     // -------------------------------------------------------------------------
     // Temporal hysteresis — torso UI / latched detection
     // -------------------------------------------------------------------------
@@ -87,17 +104,34 @@ object BodyMetricsConfig {
     const val TORSO_INVALID_COUNT: Int = 3
 
     // -------------------------------------------------------------------------
-    // Temporal gate — hand visibility accumulation
+    // Conservative hand visibility
     // -------------------------------------------------------------------------
 
-    /** Require this many consecutive hand-valid results before counting visible time. */
-    const val HAND_VISIBLE_STREAK_ON: Int = 3
+    /**
+     * Positive evidence required for [HAND_VISIBLE_STREAK_ON] consecutive
+     * processed results before handVisible becomes true.
+     */
+    const val HAND_VISIBLE_STREAK_ON: Int = 4
 
-    /** After this many consecutive hand-invalid results, stop counting visible time. */
-    const val HAND_VISIBLE_STREAK_OFF: Int = 2
+    /**
+     * A single invalid / occluded / uncertain result clears handVisible.
+     */
+    const val HAND_VISIBLE_STREAK_OFF: Int = 1
 
     /** Among thumb / index / pinky, how many must be usable and in-frame. */
     const val HAND_MIN_FINGER_LANDMARKS: Int = 2
+
+    /**
+     * Minimum Euclidean distance between at least one pair of usable finger
+     * landmarks. Collapsed inferred clusters fail this check.
+     */
+    const val HAND_MIN_FINGER_SPREAD: Float = 0.028f
+
+    /**
+     * Minimum max(width, height) of the axis-aligned bbox over wrist + usable
+     * fingers. Rejects near-zero collapsed hand predictions.
+     */
+    const val HAND_MIN_BBOX_SIZE: Float = 0.035f
 
     // -------------------------------------------------------------------------
     // Temporal smoothing (exponential moving average)

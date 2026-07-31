@@ -104,8 +104,8 @@ class BodyMetricsEngine {
             }
 
             val torso = PoseValidation.evaluateTorso(frame)
-            val leftHand = PoseValidation.evaluateLeftHand(frame)
-            val rightHand = PoseValidation.evaluateRightHand(frame)
+            val leftHand = PoseValidation.evaluateLeftHand(frame, torso)
+            val rightHand = PoseValidation.evaluateRightHand(frame, torso)
 
             val latchedTorso = torsoHysteresis.update(torso.rawValid)
             val leftHandGated = leftHandGate.update(leftHand.rawVisible)
@@ -130,6 +130,8 @@ class BodyMetricsEngine {
                 torsoValid = latchedTorso,
                 leftHandVisible = leftHandGated,
                 rightHandVisible = rightHandGated,
+                leftHand = leftHand.toDebug(leftHandGated),
+                rightHand = rightHand.toDebug(rightHandGated),
             )
 
             if (!torso.rawValid) {
@@ -468,6 +470,18 @@ class BodyMetricsEngine {
 
     private fun LandmarkUsability.toDebug(): LandmarkDebugInfo =
         LandmarkDebugInfo(visibility = visibility, inFrame = inFrame)
+
+    private fun HandValidation.toDebug(gatedVisible: Boolean): HandDebugInfo =
+        HandDebugInfo(
+            averageVisibility = averageVisibility,
+            boundingBoxSize = boundingBoxSize,
+            fingerSpread = fingerSpread,
+            insideTorsoRegion = insideTorsoRegion,
+            occludedByTorso = occludedByTorso,
+            handVisible = gatedVisible,
+            validFingerCount = validFingerCount,
+            wristVisibility = wrist.visibility,
+        )
 
     /** Package-visible counters for unit tests. */
     internal fun debugCounters(): DebugCounters = synchronized(lock) {
