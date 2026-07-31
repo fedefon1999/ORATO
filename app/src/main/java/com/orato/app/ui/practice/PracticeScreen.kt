@@ -269,7 +269,35 @@ private fun LiveMetricsDebugPanel(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
         )
-        DebugLine("valid", if (metrics.validDetection) "yes" else "no")
+        DebugLine("torsoValid", if (metrics.torsoValid) "yes" else "no")
+        DebugLine(
+            "L-sh",
+            landmarkDebug(metrics.leftShoulder),
+        )
+        DebugLine(
+            "R-sh",
+            landmarkDebug(metrics.rightShoulder),
+        )
+        DebugLine(
+            "L-hip",
+            landmarkDebug(metrics.leftHip),
+        )
+        DebugLine(
+            "R-hip",
+            landmarkDebug(metrics.rightHip),
+        )
+        DebugLine(
+            "L-wrist",
+            metrics.leftWristVisibility?.let { "%.2f".format(it) } ?: "—",
+        )
+        DebugLine(
+            "R-wrist",
+            metrics.rightWristVisibility?.let { "%.2f".format(it) } ?: "—",
+        )
+        DebugLine("L-fingers", metrics.leftValidFingerCount.toString())
+        DebugLine("R-fingers", metrics.rightValidFingerCount.toString())
+        DebugLine("L-hand", if (metrics.leftHandVisible) "yes" else "no")
+        DebugLine("R-hand", if (metrics.rightHandVisible) "yes" else "no")
         DebugLine(
             "tilt",
             metrics.shoulderTilt?.let { "%.3f".format(it) } ?: "—",
@@ -278,9 +306,13 @@ private fun LiveMetricsDebugPanel(
             "trunk",
             metrics.trunkAngleDegrees?.let { "%.1f°".format(it) } ?: "—",
         )
-        DebugLine("1-hand", if (metrics.oneHandVisible) "yes" else "no")
-        DebugLine("2-hand", if (metrics.twoHandsVisible) "yes" else "no")
     }
+}
+
+private fun landmarkDebug(info: com.orato.app.metrics.LandmarkDebugInfo): String {
+    val vis = info.visibility?.let { "%.2f".format(it) } ?: "—"
+    val frame = if (info.inFrame) "in" else "out"
+    return "$vis/$frame"
 }
 
 @Composable

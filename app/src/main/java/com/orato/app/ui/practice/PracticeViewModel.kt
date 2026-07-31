@@ -6,7 +6,6 @@ import com.orato.app.metrics.BodyMetricsEngine
 import com.orato.app.metrics.LiveBodyMetrics
 import com.orato.app.metrics.SessionBodyReport
 import com.orato.app.pose.PoseDetectionStatus
-import com.orato.app.pose.PoseVisibility
 import com.orato.app.pose.UpperBodyPoseFrame
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Job
@@ -147,11 +146,11 @@ class PracticeViewModel : ViewModel() {
         if (_uiState.value.poseStatus is PoseDetectionStatus.Error) return
 
         val live = metricsEngine.processFrame(frame)
-        val detected = PoseVisibility.hasSufficientTorsoVisibility(frame.landmarks)
         _uiState.update {
             it.copy(
                 poseFrame = frame,
-                poseStatus = if (detected) {
+                // Latched torso hysteresis from the metrics engine — never a single frame.
+                poseStatus = if (live.validDetection) {
                     PoseDetectionStatus.Detected
                 } else {
                     PoseDetectionStatus.Insufficient

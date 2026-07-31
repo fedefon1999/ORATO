@@ -2,16 +2,20 @@ package com.orato.app.pose
 
 /**
  * A single upper-body landmark in MediaPipe normalized image coordinates (0–1).
+ *
+ * [presence] is optional: when null, presence was not supplied by the model and
+ * must not be treated as a failing zero — only checked when available.
  */
 data class NormalizedLandmarkPoint(
     val id: PoseLandmarkId,
     val x: Float,
     val y: Float,
     val visibility: Float,
+    val presence: Float? = null,
 )
 
 /**
- * One processed pose frame ready for overlay rendering.
+ * One processed pose frame ready for overlay rendering and metrics.
  *
  * [imageWidth] / [imageHeight] are the dimensions of the image fed to MediaPipe
  * (after rotation), used to map normalized coords onto the preview with FILL_CENTER.
@@ -29,6 +33,10 @@ sealed interface PoseDetectionStatus {
     data class Error(val message: String) : PoseDetectionStatus
 }
 
+/**
+ * Legacy overlay helper. Session metrics use [com.orato.app.metrics.LandmarkUsability]
+ * with stricter torso/hand thresholds.
+ */
 object PoseVisibility {
     const val MIN_VISIBILITY = 0.5f
 

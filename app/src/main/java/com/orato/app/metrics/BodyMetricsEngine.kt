@@ -1,8 +1,8 @@
 package com.orato.app.metrics
 
-import com.orato.app.pose.NormalizedLandmarkPoint
 import com.orato.app.pose.PoseLandmarkId
 import com.orato.app.pose.UpperBodyPoseFrame
+import kotlin.math.abs
 
 /**
  * Session-scoped body metrics engine (outside the UI layer).
@@ -24,6 +24,10 @@ class BodyMetricsEngine {
     private val hipLeftSmoother = LandmarkPointSmoother()
     private val hipRightSmoother = LandmarkPointSmoother()
     private val tiltSmoother = ExponentialMovingAverage(config.LANDMARK_EMA_ALPHA)
+
+    private val torsoHysteresis = TorsoHysteresis()
+    private val leftHandGate = ConsecutiveVisibilityGate()
+    private val rightHandGate = ConsecutiveVisibilityGate()
 
     private var accumulating = false
     private var released = false
@@ -50,8 +54,8 @@ class BodyMetricsEngine {
     fun liveMetrics(): LiveBodyMetrics = latestLive
 
     /**
-     * Clears all accumulators and smoothers. Enables accumulation until
-     * [stopAccumulation] or [release].
+     * Clears all accumulators, smoothers, and temporal validation state.
+     * Enables accumulation until [stopAccumulation] or [release].
      */
     fun reset() {
         synchronized(lock) {
@@ -59,6 +63,7 @@ class BodyMetricsEngine {
             accumulating = true
             clearAccumulatorsLocked()
             resetSmoothersLocked()
+            resetTemporalValidationLocked()
             latestLive = LiveBodyMetrics()
         }
     }
@@ -77,14 +82,15 @@ class BodyMetricsEngine {
             accumulating = false
             clearAccumulatorsLocked()
             resetSmoothersLocked()
+            resetTemporalValidationLocked()
             latestLive = LiveBodyMetrics()
         }
     }
 
     /**
-     * Processes one pose frame. Invalid / low-visibility landmarks are skipped
-     * (never treated as zeros). Session samples are recorded only while
-     * [accumulating] is true.
+     * Processes one pose frame. Invalid / low-visibility / out-of-frame landmarks
+     * are skipped (never treated as zeros). Session samples are recorded only
+     * while [accumulating] is true, and only on genuinely valid torso frames.
      */
     fun processFrame(frame: UpperBodyPoseFrame): LiveBodyMetrics {
         synchronized(lock) {
@@ -97,113 +103,94 @@ class BodyMetricsEngine {
                 totalAnalyzedFrames++
             }
 
-            val leftShoulder = visiblePoint(frame, PoseLandmarkId.LEFT_SHOULDER)
-            val rightShoulder = visiblePoint(frame, PoseLandmarkId.RIGHT_SHOULDER)
-            val leftHip = visiblePoint(frame, PoseLandmarkId.LEFT_HIP)
-            val rightHip = visiblePoint(frame, PoseLandmarkId.RIGHT_HIP)
-            val leftWrist = visiblePoint(frame, PoseLandmarkId.LEFT_WRIST)
-            val rightWrist = visiblePoint(frame, PoseLandmarkId.RIGHT_WRIST)
-            // Elbows are part of the tracked upper-body set; smooth when present
-            // so future metrics can reuse them without cold-start jumps.
-            visiblePoint(frame, PoseLandmarkId.LEFT_ELBOW)?.let {
-                elbowLeftSmoother.update(it.x, it.y)
-            } ?: elbowLeftSmoother.reset()
-            visiblePoint(frame, PoseLandmarkId.RIGHT_ELBOW)?.let {
-                elbowRightSmoother.update(it.x, it.y)
-            } ?: elbowRightSmoother.reset()
+            val torso = PoseValidation.evaluateTorso(frame)
+            val leftHand = PoseValidation.evaluateLeftHand(frame)
+            val rightHand = PoseValidation.evaluateRightHand(frame)
 
-            val torsoValid =
-                leftShoulder != null && rightShoulder != null &&
-                    leftHip != null && rightHip != null
+            val latchedTorso = torsoHysteresis.update(torso.rawValid)
+            val leftHandGated = leftHandGate.update(leftHand.rawVisible)
+            val rightHandGated = rightHandGate.update(rightHand.rawVisible)
 
-            if (!torsoValid) {
-                // Do not invent zeros — reset smoothers for missing landmarks.
-                if (leftShoulder == null) shoulderLeftSmoother.reset() else {
-                    shoulderLeftSmoother.update(leftShoulder.x, leftShoulder.y)
-                }
-                if (rightShoulder == null) shoulderRightSmoother.reset() else {
-                    shoulderRightSmoother.update(rightShoulder.x, rightShoulder.y)
-                }
-                if (leftHip == null) hipLeftSmoother.reset() else {
-                    hipLeftSmoother.update(leftHip.x, leftHip.y)
-                }
-                if (rightHip == null) hipRightSmoother.reset() else {
-                    hipRightSmoother.update(rightHip.x, rightHip.y)
-                }
-                if (leftWrist == null) wristLeftSmoother.reset() else {
-                    wristLeftSmoother.update(leftWrist.x, leftWrist.y)
-                }
-                if (rightWrist == null) wristRightSmoother.reset() else {
-                    wristRightSmoother.update(rightWrist.x, rightWrist.y)
-                }
+            updateSmoothersLocked(torso, leftHand, rightHand, frame)
+
+            val liveBase = LiveBodyMetrics(
+                validDetection = latchedTorso,
+                shoulderTilt = null,
+                trunkAngleDegrees = null,
+                oneHandVisible = leftHandGated || rightHandGated,
+                twoHandsVisible = leftHandGated && rightHandGated,
+                leftShoulder = torso.leftShoulder.toDebug(),
+                rightShoulder = torso.rightShoulder.toDebug(),
+                leftHip = torso.leftHip.toDebug(),
+                rightHip = torso.rightHip.toDebug(),
+                leftWristVisibility = leftHand.wrist.visibility,
+                rightWristVisibility = rightHand.wrist.visibility,
+                leftValidFingerCount = leftHand.validFingerCount,
+                rightValidFingerCount = rightHand.validFingerCount,
+                torsoValid = latchedTorso,
+                leftHandVisible = leftHandGated,
+                rightHandVisible = rightHandGated,
+            )
+
+            if (!torso.rawValid) {
                 clearMotionHistoryLocked()
-                val live = LiveBodyMetrics(
-                    validDetection = false,
-                    shoulderTilt = null,
-                    trunkAngleDegrees = null,
-                    oneHandVisible = leftWrist != null || rightWrist != null,
-                    twoHandsVisible = leftWrist != null && rightWrist != null,
-                )
-                latestLive = live
-                return live
+                latestLive = liveBase
+                return liveBase
             }
 
-            val smoothLs = shoulderLeftSmoother.update(leftShoulder!!.x, leftShoulder.y)
-            val smoothRs = shoulderRightSmoother.update(rightShoulder!!.x, rightShoulder.y)
-            val smoothLh = hipLeftSmoother.update(leftHip!!.x, leftHip.y)
-            val smoothRh = hipRightSmoother.update(rightHip!!.x, rightHip.y)
+            val ls = torso.leftShoulder.point!!
+            val rs = torso.rightShoulder.point!!
+            val lh = torso.leftHip.point!!
+            val rh = torso.rightHip.point!!
+
+            val smoothLs = shoulderLeftSmoother.update(ls.x, ls.y)
+            val smoothRs = shoulderRightSmoother.update(rs.x, rs.y)
+            val smoothLh = hipLeftSmoother.update(lh.x, lh.y)
+            val smoothRh = hipRightSmoother.update(rh.x, rh.y)
 
             val width = LandmarkGeometry.shoulderWidth(smoothLs, smoothRs)
-            val tilt = width?.let {
-                LandmarkGeometry.shoulderTilt(smoothLs, smoothRs, it)
+                ?: torso.shoulderWidth
+            if (width == null) {
+                clearMotionHistoryLocked()
+                latestLive = liveBase
+                return liveBase
             }
-            val smoothedTilt = tilt?.let { tiltSmoother.update(it) }
 
+            val tilt = LandmarkGeometry.shoulderTilt(smoothLs, smoothRs, width)
+            val smoothedTilt = tilt?.let { tiltSmoother.update(it) }
             val shoulderMid = smoothLs.midpointWith(smoothRs)
             val hipMid = smoothLh.midpointWith(smoothRh)
             val trunkAngle = LandmarkGeometry.trunkInclinationDegrees(shoulderMid, hipMid)
 
-            val smoothLw = leftWrist?.let { wristLeftSmoother.update(it.x, it.y) }
-                ?: run {
-                    wristLeftSmoother.reset()
-                    null
-                }
-            val smoothRw = rightWrist?.let { wristRightSmoother.update(it.x, it.y) }
-                ?: run {
-                    wristRightSmoother.reset()
-                    null
-                }
+            val smoothLw = leftHand.wristPoint?.let { wristLeftSmoother.update(it.x, it.y) }
+            val smoothRw = rightHand.wristPoint?.let { wristRightSmoother.update(it.x, it.y) }
 
-            val oneHand = smoothLw != null || smoothRw != null
-            val twoHands = smoothLw != null && smoothRw != null
-
-            if (accumulating && width != null) {
+            if (accumulating) {
+                // Camera presence & torso metrics: genuinely valid raw torso only.
                 validTorsoFrames++
-                if (oneHand) oneHandVisibleFrames++
-                if (twoHands) twoHandsVisibleFrames++
+                if (leftHandGated || rightHandGated) oneHandVisibleFrames++
+                if (leftHandGated && rightHandGated) twoHandsVisibleFrames++
                 if (smoothedTilt != null) shoulderTiltSamples += smoothedTilt
                 if (trunkAngle != null) trunkAngleSamples += trunkAngle
 
                 accumulateStabilityLocked(shoulderMid, hipMid, width)
-                accumulateGestureLocked(smoothLw, smoothRw, width)
-            } else if (width == null) {
-                clearMotionHistoryLocked()
+                // Gesture uses gated-visible wrists only (not inferred occluded ones).
+                accumulateGestureLocked(
+                    leftWrist = if (leftHandGated) smoothLw else null,
+                    rightWrist = if (rightHandGated) smoothRw else null,
+                    shoulderWidth = width,
+                )
             } else {
-                // Not accumulating: still keep motion history fresh for live feel,
-                // but do not append samples.
                 prevShoulderMid = shoulderMid
                 prevHipMid = hipMid
-                prevLeftWrist = smoothLw
-                prevRightWrist = smoothRw
+                prevLeftWrist = if (leftHandGated) smoothLw else null
+                prevRightWrist = if (rightHandGated) smoothRw else null
                 prevShoulderWidth = width
             }
 
-            val live = LiveBodyMetrics(
-                validDetection = true,
+            val live = liveBase.copy(
                 shoulderTilt = smoothedTilt,
                 trunkAngleDegrees = trunkAngle,
-                oneHandVisible = oneHand,
-                twoHandsVisible = twoHands,
             )
             latestLive = live
             return live
@@ -279,8 +266,6 @@ class BodyMetricsEngine {
             val oneHandPct = 100f * oneHandVisibleFrames.toFloat() / validTorsoFrames.toFloat()
             val twoHandPct = 100f * twoHandsVisibleFrames.toFloat() / validTorsoFrames.toFloat()
 
-            val gesture = buildGestureMetricLocked()
-
             return SessionBodyReport(
                 cameraPresence = PercentMetric(
                     percent = presencePercent,
@@ -297,7 +282,7 @@ class BodyMetricsEngine {
                     percent = twoHandPct,
                     insufficientData = false,
                 ),
-                gestureActivity = gesture,
+                gestureActivity = buildGestureMetricLocked(),
             )
         }
     }
@@ -331,6 +316,47 @@ class BodyMetricsEngine {
         )
     }
 
+    private fun updateSmoothersLocked(
+        torso: TorsoValidation,
+        leftHand: HandValidation,
+        rightHand: HandValidation,
+        frame: UpperBodyPoseFrame,
+    ) {
+        fun smoothOrReset(
+            usability: LandmarkUsability,
+            smoother: LandmarkPointSmoother,
+        ) {
+            val p = usability.point
+            if (p != null) smoother.update(p.x, p.y) else smoother.reset()
+        }
+
+        // Shoulders/hips only smoothed when usable; never invent zeros.
+        if (!torso.rawValid) {
+            smoothOrReset(torso.leftShoulder, shoulderLeftSmoother)
+            smoothOrReset(torso.rightShoulder, shoulderRightSmoother)
+            smoothOrReset(torso.leftHip, hipLeftSmoother)
+            smoothOrReset(torso.rightHip, hipRightSmoother)
+        }
+
+        val leftElbow = LandmarkUsabilityEvaluator.fromFrame(
+            frame,
+            PoseLandmarkId.LEFT_ELBOW,
+            config.HAND_LANDMARK_MIN_VISIBILITY,
+            requireInFrame = false,
+        )
+        val rightElbow = LandmarkUsabilityEvaluator.fromFrame(
+            frame,
+            PoseLandmarkId.RIGHT_ELBOW,
+            config.HAND_LANDMARK_MIN_VISIBILITY,
+            requireInFrame = false,
+        )
+        smoothOrReset(leftElbow, elbowLeftSmoother)
+        smoothOrReset(rightElbow, elbowRightSmoother)
+
+        if (leftHand.wristPoint == null) wristLeftSmoother.reset()
+        if (rightHand.wristPoint == null) wristRightSmoother.reset()
+    }
+
     private fun accumulateStabilityLocked(
         shoulderMid: Point2D,
         hipMid: Point2D,
@@ -355,17 +381,15 @@ class BodyMetricsEngine {
         if (shoulderJump > config.MAX_NORMALIZED_JUMP ||
             hipJump > config.MAX_NORMALIZED_JUMP
         ) {
-            // Detection jump — exclude from stability, keep new position as baseline.
             return
         }
 
-        // Lateral sway emphasis: |Δx| of both midpoints, normalized.
         val shoulderLateral = LandmarkGeometry.normalizeByShoulderWidth(
-            kotlin.math.abs(shoulderMid.x - prevS.x),
+            abs(shoulderMid.x - prevS.x),
             shoulderWidth,
         )
         val hipLateral = LandmarkGeometry.normalizeByShoulderWidth(
-            kotlin.math.abs(hipMid.x - prevH.x),
+            abs(hipMid.x - prevH.x),
             shoulderWidth,
         )
         swaySamples += (shoulderLateral + hipLateral) / 2f
@@ -403,15 +427,6 @@ class BodyMetricsEngine {
         }
     }
 
-    private fun visiblePoint(
-        frame: UpperBodyPoseFrame,
-        id: PoseLandmarkId,
-    ): NormalizedLandmarkPoint? {
-        val point = frame.landmarks[id] ?: return null
-        if (point.visibility < config.MIN_LANDMARK_VISIBILITY) return null
-        return point
-    }
-
     private fun clearMotionHistoryLocked() {
         prevShoulderMid = null
         prevHipMid = null
@@ -445,26 +460,45 @@ class BodyMetricsEngine {
         tiltSmoother.reset()
     }
 
+    private fun resetTemporalValidationLocked() {
+        torsoHysteresis.reset()
+        leftHandGate.reset()
+        rightHandGate.reset()
+    }
+
+    private fun LandmarkUsability.toDebug(): LandmarkDebugInfo =
+        LandmarkDebugInfo(visibility = visibility, inFrame = inFrame)
+
     /** Package-visible counters for unit tests. */
     internal fun debugCounters(): DebugCounters = synchronized(lock) {
         DebugCounters(
             totalAnalyzedFrames = totalAnalyzedFrames,
             validTorsoFrames = validTorsoFrames,
+            oneHandVisibleFrames = oneHandVisibleFrames,
+            twoHandsVisibleFrames = twoHandsVisibleFrames,
             shoulderTiltSampleCount = shoulderTiltSamples.size,
             swaySampleCount = swaySamples.size,
             gestureSampleCount = gestureActivitySamples.size,
             isAccumulating = accumulating,
             isReleased = released,
+            torsoLatched = torsoHysteresis.current(),
+            leftHandGated = leftHandGate.current(),
+            rightHandGated = rightHandGate.current(),
         )
     }
 
     internal data class DebugCounters(
         val totalAnalyzedFrames: Int,
         val validTorsoFrames: Int,
+        val oneHandVisibleFrames: Int,
+        val twoHandsVisibleFrames: Int,
         val shoulderTiltSampleCount: Int,
         val swaySampleCount: Int,
         val gestureSampleCount: Int,
         val isAccumulating: Boolean,
         val isReleased: Boolean,
+        val torsoLatched: Boolean,
+        val leftHandGated: Boolean,
+        val rightHandGated: Boolean,
     )
 }

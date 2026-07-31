@@ -11,10 +11,19 @@ enum class GestureActivityClass {
 }
 
 /**
+ * Per-landmark debug snapshot for the practice overlay.
+ */
+data class LandmarkDebugInfo(
+    val visibility: Float? = null,
+    val inFrame: Boolean = false,
+)
+
+/**
  * Live per-frame debug snapshot for the practice overlay panel.
- * Raw measurements only (no session scores).
+ * Raw measurements stay separate from session presentation scores.
  */
 data class LiveBodyMetrics(
+    /** Latched torso detection (hysteresis) — drives “Posizione rilevata”. */
     val validDetection: Boolean = false,
     /** Absolute shoulder tilt ratio, or null when not measurable this frame. */
     val shoulderTilt: Float? = null,
@@ -22,6 +31,18 @@ data class LiveBodyMetrics(
     val trunkAngleDegrees: Float? = null,
     val oneHandVisible: Boolean = false,
     val twoHandsVisible: Boolean = false,
+    // --- temporary development validation fields ---
+    val leftShoulder: LandmarkDebugInfo = LandmarkDebugInfo(),
+    val rightShoulder: LandmarkDebugInfo = LandmarkDebugInfo(),
+    val leftHip: LandmarkDebugInfo = LandmarkDebugInfo(),
+    val rightHip: LandmarkDebugInfo = LandmarkDebugInfo(),
+    val leftWristVisibility: Float? = null,
+    val rightWristVisibility: Float? = null,
+    val leftValidFingerCount: Int = 0,
+    val rightValidFingerCount: Int = 0,
+    val torsoValid: Boolean = false,
+    val leftHandVisible: Boolean = false,
+    val rightHandVisible: Boolean = false,
 )
 
 /**
