@@ -7,8 +7,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import kotlin.io.path.createTempDirectory
 import kotlin.math.PI
 import kotlin.math.sin
+
+private fun tempDir(prefix: String): File =
+    createTempDirectory(prefix).toFile()
 
 class PcmMathTest {
 
@@ -132,7 +136,7 @@ class WavFileWriterTest {
 
     @Test
     fun finalize_patchesDataLength() {
-        val dir = createTempDir(prefix = "orato_wav_test")
+        val dir = tempDir("orato_wav_test")
         try {
             val file = File(dir, "session.wav")
             val writer = WavFileWriter(file, sampleRateHz = 16_000)
@@ -154,7 +158,7 @@ class WavFileWriterTest {
 
     @Test
     fun close_isIdempotentAndFinalizes() {
-        val dir = createTempDir(prefix = "orato_wav_close")
+        val dir = tempDir("orato_wav_close")
         try {
             val file = File(dir, "a.wav")
             val writer = WavFileWriter(file, sampleRateHz = 44_100)
@@ -529,7 +533,7 @@ class AudioSessionCacheTest {
 
     @Test
     fun prepareSessionDir_deletesPriorWavFiles() {
-        val cache = createTempDir(prefix = "orato_cache")
+        val cache = tempDir("orato_cache")
         try {
             val dir = AudioSessionCache.sessionDir(cache)
             dir.mkdirs()
@@ -546,7 +550,7 @@ class AudioSessionCacheTest {
 
     @Test
     fun deleteSessionFile_removesTargetOnly() {
-        val cache = createTempDir(prefix = "orato_cache2")
+        val cache = tempDir("orato_cache2")
         try {
             val a = AudioSessionCache.sessionFile(cache, "aaa")
             val b = AudioSessionCache.sessionFile(cache, "bbb")

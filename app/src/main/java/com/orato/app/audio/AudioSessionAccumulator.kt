@@ -126,8 +126,14 @@ class AudioSessionAccumulator(
         }
 
         val segments = buildQualifiedSpeechSegments()
-        val speechMs = segments.sumOf { it.second - it.first }
-        val speechRatio = if (durationMs > 0L) speechMs.toDouble() / durationMs.toDouble() else 0.0
+        val speechMs = segments.sumOf { (start, end) ->
+            ((end - start) * frameDurationMs).toLong()
+        }
+        val speechRatio = if (durationMs > 0L) {
+            speechMs.toDouble() / durationMs.toDouble()
+        } else {
+            0.0
+        }
         val pauses = computeInternalPauses(segments)
 
         val meanSpeech = if (speechDbfsLevels.isNotEmpty()) {
