@@ -17,6 +17,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.orato.app.audio.AudioInputQuality
+import com.orato.app.audio.AudioSessionMetrics
+import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.domain.model.Scenario
 import com.orato.app.metrics.GestureActivityClass
 import com.orato.app.metrics.GestureActivityMetric
@@ -27,7 +30,7 @@ import com.orato.app.metrics.SessionBodyReport
 @Composable
 fun BodyReportScreen(
     scenario: Scenario,
-    report: SessionBodyReport,
+    report: SessionPracticeReport,
     onHome: () -> Unit,
     onRepeat: () -> Unit,
     modifier: Modifier = Modifier,
@@ -58,30 +61,11 @@ fun BodyReportScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        ReportPercentRow(
-            label = "Presenza in camera",
-            metric = report.cameraPresence,
-        )
-        ReportScoreRow(
-            label = "Equilibrio spalle",
-            metric = report.shoulderBalance,
-            rawSuffix = " (tilt)",
-        )
-        ReportInclinationRow(metric = report.trunkInclination)
-        ReportScoreRow(
-            label = "Stabilità del busto",
-            metric = report.trunkStability,
-            rawSuffix = " (sway)",
-        )
-        ReportPercentRow(
-            label = "Visibilità una mano",
-            metric = report.oneHandVisibility,
-        )
-        ReportPercentRow(
-            label = "Visibilità due mani",
-            metric = report.twoHandVisibility,
-        )
-        ReportGestureRow(metric = report.gestureActivity)
+        BodySection(report.body)
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        VoiceSection(report.audio)
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -99,6 +83,127 @@ fun BodyReportScreen(
         }
     }
 }
+
+@Composable
+private fun BodySection(report: SessionBodyReport) {
+    ReportPercentRow(
+        label = "Presenza in camera",
+        metric = report.cameraPresence,
+    )
+    ReportScoreRow(
+        label = "Equilibrio spalle",
+        metric = report.shoulderBalance,
+        rawSuffix = " (tilt)",
+    )
+    ReportInclinationRow(metric = report.trunkInclination)
+    ReportScoreRow(
+        label = "Stabilità del busto",
+        metric = report.trunkStability,
+        rawSuffix = " (sway)",
+    )
+    ReportPercentRow(
+        label = "Visibilità una mano",
+        metric = report.oneHandVisibility,
+    )
+    ReportPercentRow(
+        label = "Visibilità due mani",
+        metric = report.twoHandVisibility,
+    )
+    ReportGestureRow(metric = report.gestureActivity)
+}
+
+@Composable
+private fun VoiceSection(audio: AudioSessionMetrics) {
+    Text(
+        text = "Voce",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onBackground,
+    )
+    Text(
+        text = "Pause approssimative dall’audio (nessuna trascrizione ancora).",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (audio.insufficientData ||
+        audio.inputQuality == AudioInputQuality.INSUFFICIENT_AUDIO ||
+        audio.inputQuality == AudioInputQuality.RECORDING_ERROR
+    ) {
+        ReportLine(label = "Metriche vocali", value = "Dati audio insufficienti")
+        if (audio.errorMessage != null) {
+            Text(
+                text = audio.errorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        ReportLine(
+            label = "Durata catturata",
+            value = formatDurationMs(audio.capturedDurationMs),
+        )
+        ReportLine(
+            label = "Qualità ingresso",
+            value = inputQualityLabel(audio.inputQuality),
+        )
+        return
+    }
+
+    ReportLine(
+        label = "Durata catturata",
+        value = formatDurationMs(audio.capturedDurationMs),
+    )
+    ReportLine(
+        label = "Rapporto di parlato",
+        value = audio.speechRatioPercent?.let { "%.0f%%".format(it) } ?: "—",
+    )
+    ReportLine(
+        label = "Volume medio (parlato)",
+        value = audio.meanSpeechDbfs?.let { "%.1f dBFS".format(it) } ?: "—",
+    )
+    ReportLine(
+        label = "Variazione di volume",
+        value = audio.volumeVariationStdDevDb?.let { "%.2f dB σ".format(it) } ?: "—",
+    )
+    ReportLine(
+        label = "Pause approssimative",
+        value = audio.approximatePauseCount?.toString() ?: "—",
+    )
+    ReportLine(
+        label = "Durata mediana pausa",
+        value = audio.medianPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
+    )
+    ReportLine(
+        label = "Pausa più lunga",
+        value = audio.longestPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
+    )
+    ReportLine(
+        label = "Pause oltre 1,5 s",
+        value = audio.pausesOver1500Ms?.toString() ?: "—",
+    )
+    ReportLine(
+        label = "Clipping",
+        value = audio.clippingPercent?.let { "%.2f%%".format(it) } ?: "—",
+    )
+    ReportLine(
+        label = "Qualità ingresso",
+        value = inputQualityLabel(audio.inputQuality),
+    )
+}
+
+private fun formatDurationMs(ms: Long): String {
+    if (ms < 1_000L) return "%d ms".format(ms)
+    val seconds = ms / 1_000.0
+    return "%.1f s".format(seconds)
+}
+
+private fun inputQualityLabel(quality: AudioInputQuality): String =
+    when (quality) {
+        AudioInputQuality.GOOD -> "GOOD"
+        AudioInputQuality.TOO_QUIET -> "TOO_QUIET"
+        AudioInputQuality.CLIPPING -> "CLIPPING"
+        AudioInputQuality.INSUFFICIENT_AUDIO -> "INSUFFICIENT_AUDIO"
+        AudioInputQuality.RECORDING_ERROR -> "RECORDING_ERROR"
+    }
 
 @Composable
 private fun ReportPercentRow(
