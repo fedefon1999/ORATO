@@ -76,7 +76,7 @@ dependencies {
     implementation("com.google.accompanist:accompanist-permissions:0.36.0")
 
     // MediaPipe Pose Landmarker (dependency ready for later posture analysis)
-    implementation("com.google.mediapipe:tasks-vision:0.10.18")
+    implementation("com.google.mediapipe:tasks-vision:0.10.26.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
