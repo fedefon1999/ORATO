@@ -41,11 +41,8 @@ import com.google.accompanist.permissions.PermissionStatus
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
-import com.orato.app.audio.AudioRecordingState
-import com.orato.app.audio.LiveAudioDebug
 import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.domain.model.Scenario
-import com.orato.app.metrics.LiveBodyMetrics
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
 
@@ -253,15 +250,15 @@ private fun PracticeSessionContent(
                 )
             }
 
-            Column(
+            PracticeDebugPanel(
+                poseStatus = uiState.poseStatus,
+                poseStatusLabel = uiState.poseStatusLabel,
+                bodyMetrics = uiState.liveMetrics,
+                audioDebug = uiState.audioDebug,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                LiveMetricsDebugPanel(metrics = uiState.liveMetrics)
-                LiveAudioDebugPanel(debug = uiState.audioDebug)
-            }
+            )
         }
 
         Text(
@@ -326,126 +323,4 @@ private fun PracticeSessionContent(
             }
         }
     }
-}
-
-/**
- * Compact development overlay. Kept small so it does not obstruct the camera.
- */
-@Composable
-private fun LiveMetricsDebugPanel(
-    metrics: LiveBodyMetrics,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Text(
-            text = "debug metrics",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
-        )
-        DebugLine("torsoValid", if (metrics.torsoValid) "yes" else "no")
-        DebugLine("L-sh", landmarkDebug(metrics.leftShoulder))
-        DebugLine("R-sh", landmarkDebug(metrics.rightShoulder))
-        DebugLine("L-hip", landmarkDebug(metrics.leftHip))
-        DebugLine("R-hip", landmarkDebug(metrics.rightHip))
-        DebugLine(
-            "L-wrist",
-            metrics.leftWristVisibility?.let { "%.2f".format(it) } ?: "—",
-        )
-        DebugLine(
-            "R-wrist",
-            metrics.rightWristVisibility?.let { "%.2f".format(it) } ?: "—",
-        )
-        DebugLine("L-fingers", metrics.leftValidFingerCount.toString())
-        DebugLine("R-fingers", metrics.rightValidFingerCount.toString())
-        DebugLine("L-hand", handDebug(metrics.leftHand))
-        DebugLine("R-hand", handDebug(metrics.rightHand))
-        DebugLine(
-            "tilt",
-            metrics.shoulderTilt?.let { "%.3f".format(it) } ?: "—",
-        )
-        DebugLine(
-            "trunk",
-            metrics.trunkAngleDegrees?.let { "%.1f°".format(it) } ?: "—",
-        )
-    }
-}
-
-/**
- * Compact development-only audio panel (no waveform).
- * Does not expose the local file path.
- */
-@Composable
-private fun LiveAudioDebugPanel(
-    debug: LiveAudioDebug,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Text(
-            text = "debug audio",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
-        )
-        DebugLine("state", audioStateLabel(debug.state))
-        DebugLine("rate", debug.sampleRateHz?.toString() ?: "—")
-        DebugLine("source", debug.audioSourceLabel ?: "—")
-        DebugLine(
-            "dBFS",
-            debug.currentDbfs?.let { "%.1f".format(it) } ?: "—",
-        )
-        DebugLine(
-            "noise",
-            debug.noiseFloorDbfs?.let { "%.1f".format(it) } ?: "—",
-        )
-        DebugLine("speech", if (debug.isSpeech) "yes" else "no")
-        DebugLine("captured", "%d ms".format(debug.capturedDurationMs))
-        DebugLine("dropped", debug.droppedReadCount.toString())
-        if (debug.errorMessage != null) {
-            DebugLine("error", debug.errorMessage)
-        }
-    }
-}
-
-private fun audioStateLabel(state: AudioRecordingState): String =
-    when (state) {
-        AudioRecordingState.Idle -> "Idle"
-        AudioRecordingState.Initializing -> "Initializing"
-        AudioRecordingState.Recording -> "Recording"
-        AudioRecordingState.Stopping -> "Stopping"
-        AudioRecordingState.Completed -> "Completed"
-        AudioRecordingState.Error -> "Error"
-    }
-
-private fun landmarkDebug(info: com.orato.app.metrics.LandmarkDebugInfo): String {
-    val vis = info.visibility?.let { "%.2f".format(it) } ?: "—"
-    val frame = if (info.inFrame) "in" else "out"
-    return "$vis/$frame"
-}
-
-private fun handDebug(info: com.orato.app.metrics.HandDebugInfo): String {
-    val avg = info.averageVisibility?.let { "%.2f".format(it) } ?: "—"
-    val box = info.boundingBoxSize?.let { "%.3f".format(it) } ?: "—"
-    val spread = info.fingerSpread?.let { "%.3f".format(it) } ?: "—"
-    val inside = if (info.insideTorsoRegion) "inT" else "outT"
-    val occ = if (info.occludedByTorso) "occ" else "clear"
-    val vis = if (info.handVisible) "vis" else "hide"
-    return "$vis avg=$avg box=$box spr=$spread $inside $occ"
-}
-
-@Composable
-private fun DebugLine(label: String, value: String) {
-    Text(
-        text = "$label: $value",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onPrimary,
-    )
 }
