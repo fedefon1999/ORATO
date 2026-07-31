@@ -35,6 +35,8 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.MultiplePermissionsState
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.orato.app.domain.model.Scenario
+import com.orato.app.pose.PoseDetectionStatus
+import com.orato.app.pose.UpperBodyPoseFrame
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -77,6 +79,8 @@ fun PracticeScreen(
                     uiState = uiState,
                     onStart = viewModel::startSession,
                     onReset = viewModel::resetSession,
+                    onPoseFrame = viewModel::onPoseFrame,
+                    onPoseStatus = viewModel::onPoseStatus,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding),
@@ -133,6 +137,8 @@ private fun PracticeSessionContent(
     uiState: PracticeUiState,
     onStart: () -> Unit,
     onReset: () -> Unit,
+    onPoseFrame: (UpperBodyPoseFrame) -> Unit,
+    onPoseStatus: (PoseDetectionStatus) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -145,7 +151,17 @@ private fun PracticeSessionContent(
                 .weight(1f)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
-            FrontCameraPreview(modifier = Modifier.fillMaxSize())
+            FrontCameraPreview(
+                onPoseFrame = onPoseFrame,
+                onPoseStatus = onPoseStatus,
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            PoseSkeletonOverlay(
+                poseFrame = uiState.poseFrame,
+                mirrorHorizontally = true,
+                modifier = Modifier.fillMaxSize(),
+            )
 
             Column(
                 modifier = Modifier
@@ -164,6 +180,17 @@ private fun PracticeSessionContent(
                 LinearProgressIndicator(
                     progress = { uiState.progress },
                     modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = uiState.poseStatusLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = when (uiState.poseStatus) {
+                        is PoseDetectionStatus.Error -> MaterialTheme.colorScheme.error
+                        PoseDetectionStatus.Detected -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onPrimary
+                    },
+                    textAlign = TextAlign.Center,
                 )
             }
         }
