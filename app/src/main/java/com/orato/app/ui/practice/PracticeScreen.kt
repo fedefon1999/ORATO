@@ -24,6 +24,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +36,8 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.MultiplePermissionsState
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.orato.app.domain.model.Scenario
+import com.orato.app.metrics.LiveBodyMetrics
+import com.orato.app.metrics.SessionBodyReport
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
 
@@ -43,6 +46,7 @@ import com.orato.app.pose.UpperBodyPoseFrame
 fun PracticeScreen(
     scenario: Scenario,
     onExit: () -> Unit,
+    onSessionComplete: (SessionBodyReport) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: PracticeViewModel = viewModel(),
 ) {
@@ -53,6 +57,12 @@ fun PracticeScreen(
             Manifest.permission.RECORD_AUDIO,
         ),
     )
+
+    LaunchedEffect(viewModel) {
+        viewModel.sessionCompleted.collect { report ->
+            onSessionComplete(report)
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -193,11 +203,18 @@ private fun PracticeSessionContent(
                     textAlign = TextAlign.Center,
                 )
             }
+
+            LiveMetricsDebugPanel(
+                metrics = uiState.liveMetrics,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(8.dp),
+            )
         }
 
         Text(
             text = when {
-                uiState.isFinished -> "Sessione completata. Analisi e report arriveranno nelle prossime milestone."
+                uiState.isFinished -> "Sessione completata. Apertura report corporeo…"
                 uiState.isRunning -> "Parla con naturalezza. Mantieni lo sguardo verso la fotocamera."
                 else -> "Quando sei pronto, avvia i 90 secondi di pratica."
             },
@@ -209,12 +226,7 @@ private fun PracticeSessionContent(
 
         when {
             uiState.isFinished -> {
-                Button(
-                    onClick = onReset,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Ripeti sessione")
-                }
+                // Navigation to the report is handled by LaunchedEffect.
             }
 
             uiState.isRunning -> {
@@ -236,4 +248,46 @@ private fun PracticeSessionContent(
             }
         }
     }
+}
+
+/**
+ * Compact development overlay. Kept small so it does not obstruct the camera.
+ */
+@Composable
+private fun LiveMetricsDebugPanel(
+    metrics: LiveBodyMetrics,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = "debug metrics",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
+        )
+        DebugLine("valid", if (metrics.validDetection) "yes" else "no")
+        DebugLine(
+            "tilt",
+            metrics.shoulderTilt?.let { "%.3f".format(it) } ?: "—",
+        )
+        DebugLine(
+            "trunk",
+            metrics.trunkAngleDegrees?.let { "%.1f°".format(it) } ?: "—",
+        )
+        DebugLine("1-hand", if (metrics.oneHandVisible) "yes" else "no")
+        DebugLine("2-hand", if (metrics.twoHandsVisible) "yes" else "no")
+    }
+}
+
+@Composable
+private fun DebugLine(label: String, value: String) {
+    Text(
+        text = "$label: $value",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onPrimary,
+    )
 }
