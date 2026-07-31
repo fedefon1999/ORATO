@@ -2,9 +2,11 @@
 .gradle/
 build/
 **/build/
+.kotlin/
 
 # Local configuration
 local.properties
+*.keystore.properties
 
 # Android Studio
 .idea/
