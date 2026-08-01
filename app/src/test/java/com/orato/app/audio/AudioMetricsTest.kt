@@ -966,6 +966,6 @@ class VoiceReportPresentationTest {
         assertEquals("Troppo basso", VoiceReportPresentation.volumeLabel(VolumeSummary.TroppoBasso))
         assertEquals("Clipping", VoiceReportPresentation.volumeLabel(VolumeSummary.Clipping))
         assertTrue(VoiceReportPresentation.PAUSE_INTERPRETATION.contains("articolazione"))
-        assertEquals("più vicino a 0 = più forte", VoiceReportPresentation.VOLUME_HINT)
+        assertEquals("Più vicino a 0 = volume più alto.", VoiceReportPresentation.VOLUME_HINT)
     }
 }
