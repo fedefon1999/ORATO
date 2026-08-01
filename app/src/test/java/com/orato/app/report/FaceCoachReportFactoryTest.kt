@@ -137,36 +137,43 @@ class FaceCoachReportFactoryTest {
     }
 
     @Test
-    fun bodyAndFace_hasBothVisualGroups() {
-        val report = CompletedSessionReportFactory.build(
-            sessionId = "bf",
-            scenarioName = Scenario.INTERVIEW.displayName,
-            completedAtEpochMs = 1L,
-            totalSessionDurationMs = 90_000L,
-            body = SessionBodyReport.emptyInsufficient(),
-            audio = audio(),
-            linguistic = linguistic(),
-            scenario = Scenario.INTERVIEW,
-            visualAnalysisMode = VisualAnalysisMode.BODY_AND_FACE,
-            face = faceReport(),
-        )
-        assertNotNull(report.body)
-        assertNotNull(report.facePresence)
-        assertNotNull(report.gaze)
-        assertNotNull(report.headMovement)
-    }
-
-    @Test
-    fun voiceAndRhythm_inEveryScenario() {
-        for (mode in VisualAnalysisMode.entries) {
+    fun noReportContainsBothBodyAndFaceVisualSections() {
+        for (scenario in Scenario.entries) {
+            val mode = com.orato.app.domain.model.VisualAnalysisMapping.modeFor(scenario)
             val report = CompletedSessionReportFactory.build(
-                sessionId = mode.name,
-                scenarioName = mode.name,
+                sessionId = scenario.name,
+                scenarioName = scenario.displayName,
                 completedAtEpochMs = 1L,
                 totalSessionDurationMs = 90_000L,
                 body = SessionBodyReport.emptyInsufficient(),
                 audio = audio(),
                 linguistic = linguistic(),
+                scenario = scenario,
+                visualAnalysisMode = mode,
+                face = faceReport(),
+            )
+            val hasBody = report.body != null
+            val hasFace = report.facePresence != null || report.gaze != null || report.headMovement != null
+            assertFalse(
+                "Scenario ${scenario.name} must not include both body and face visuals",
+                hasBody && hasFace,
+            )
+        }
+    }
+
+    @Test
+    fun voiceAndRhythm_inEveryScenario() {
+        for (scenario in Scenario.entries) {
+            val mode = com.orato.app.domain.model.VisualAnalysisMapping.modeFor(scenario)
+            val report = CompletedSessionReportFactory.build(
+                sessionId = scenario.name,
+                scenarioName = scenario.displayName,
+                completedAtEpochMs = 1L,
+                totalSessionDurationMs = 90_000L,
+                body = SessionBodyReport.emptyInsufficient(),
+                audio = audio(),
+                linguistic = linguistic(),
+                scenario = scenario,
                 visualAnalysisMode = mode,
                 face = faceReport(),
             )
@@ -176,20 +183,21 @@ class FaceCoachReportFactoryTest {
     }
 
     @Test
-    fun faceFailure_preservesBodyAudioSpeech() {
+    fun faceFailure_marksFaceUnavailable_preservesAudioSpeech_faceOnly() {
         val report = CompletedSessionReportFactory.build(
             sessionId = "ff",
-            scenarioName = "Colloquio",
+            scenarioName = Scenario.EXAM.displayName,
             completedAtEpochMs = 1L,
             totalSessionDurationMs = 90_000L,
-            body = SessionBodyReport.emptyInsufficient(),
+            body = null,
             audio = audio(),
             linguistic = linguistic(),
-            visualAnalysisMode = VisualAnalysisMode.BODY_AND_FACE,
+            scenario = Scenario.EXAM,
+            visualAnalysisMode = VisualAnalysisMode.FACE_ONLY,
             face = null,
             faceFailed = true,
         )
-        assertNotNull(report.body)
+        assertNull(report.body)
         assertNull(report.facePresence)
         assertTrue(ReportSection.FACE_PRESENCE in report.unavailableSections)
         assertFalse(report.voice.insufficientData)
@@ -197,22 +205,23 @@ class FaceCoachReportFactoryTest {
     }
 
     @Test
-    fun poseFailure_preservesFaceAudioSpeech() {
+    fun poseFailure_marksBodyUnavailable_preservesAudioSpeech_bodyOnly() {
         val report = CompletedSessionReportFactory.build(
             sessionId = "pf",
-            scenarioName = "Colloquio",
+            scenarioName = Scenario.PRESENTATION.displayName,
             completedAtEpochMs = 1L,
             totalSessionDurationMs = 90_000L,
             body = null,
             audio = audio(),
             linguistic = linguistic(),
-            visualAnalysisMode = VisualAnalysisMode.BODY_AND_FACE,
+            scenario = Scenario.PRESENTATION,
+            visualAnalysisMode = VisualAnalysisMode.BODY_ONLY,
             face = faceReport(),
             bodyFailed = true,
         )
         assertNull(report.body)
         assertTrue(ReportSection.BODY in report.unavailableSections)
-        assertNotNull(report.facePresence)
+        assertNull(report.facePresence)
         assertFalse(report.voice.insufficientData)
         assertTrue(report.rhythmAndFluency.linguisticAvailable)
     }
