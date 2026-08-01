@@ -170,6 +170,7 @@ class AudioSessionAccumulator(
                 inputQuality = AudioInputQuality.RECORDING_ERROR,
                 capturedDurationMs = capturedDurationMs(),
                 speechDurationMs = null,
+                longestSpeechSegmentMs = null,
                 droppedReadCount = droppedReads,
                 sampleRateHz = sampleRateHz,
                 audioSourceLabel = audioSourceLabel,
@@ -196,6 +197,7 @@ class AudioSessionAccumulator(
 
         val speechSegments = qualifiedSpeechSegments()
         val speechMs = speechSegments.sumOf { it.durationMs }
+        val longestSpeech = speechSegments.maxOfOrNull { it.durationMs }
         // Speech ratio from actual speech duration on the timeline — never raw capture.
         val speechRatio = if (durationMs > 0L) {
             speechMs.toDouble() / durationMs.toDouble()
@@ -234,6 +236,7 @@ class AudioSessionAccumulator(
                 inputQuality = AudioInputQuality.INSUFFICIENT_AUDIO,
                 capturedDurationMs = durationMs,
                 speechDurationMs = speechMs.takeIf { speechSegments.isNotEmpty() },
+                longestSpeechSegmentMs = longestSpeech.takeIf { speechSegments.isNotEmpty() },
                 droppedReadCount = droppedReads,
                 sampleRateHz = sampleRateHz,
                 audioSourceLabel = audioSourceLabel,
@@ -256,6 +259,7 @@ class AudioSessionAccumulator(
             inputQuality = quality,
             capturedDurationMs = durationMs,
             speechDurationMs = speechMs,
+            longestSpeechSegmentMs = longestSpeech,
             droppedReadCount = droppedReads,
             sampleRateHz = sampleRateHz,
             audioSourceLabel = audioSourceLabel,

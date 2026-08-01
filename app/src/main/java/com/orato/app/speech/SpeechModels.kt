@@ -49,7 +49,7 @@ sealed class WhisperModelState {
     data class Error(val userSafeMessage: String) : WhisperModelState()
 }
 
-/** Post-session linguistic analysis UI/domain state (no transcript payload). */
+/** Post-session linguistic analysis pipeline state (no transcript payload). */
 sealed interface TranscriptionState {
     data object NotRequested : TranscriptionState
     data object ModelUnavailable : TranscriptionState
@@ -60,17 +60,26 @@ sealed interface TranscriptionState {
     data object Cancelled : TranscriptionState
 }
 
+data class DiscourseMarkerMetrics(
+    val totalCount: Int,
+    val markersPerMinute: Double?,
+    val breakdown: Map<String, Int>,
+) {
+    companion object {
+        fun empty(): DiscourseMarkerMetrics =
+            DiscourseMarkerMetrics(totalCount = 0, markersPerMinute = null, breakdown = emptyMap())
+    }
+}
+
 /**
- * Public speaking metrics derived from an ephemeral transcript.
+ * Linguistic metrics derived from an ephemeral transcript.
  * No transcript field — the normal report must not expose recognized text.
  */
 data class SpeechIntelligenceMetrics(
     val wordCount: Int,
     val vadSpeechDurationMs: Long,
     val wordsPerMinute: Double?,
-    val fillerCount: Int,
-    val fillersPerMinute: Double?,
-    val fillerBreakdown: Map<String, Int>,
+    val discourseMarkers: DiscourseMarkerMetrics,
     val immediateRepetitionCount: Int,
     val immediateRepetitionBreakdown: Map<String, Int>,
 )
@@ -89,35 +98,19 @@ object SpeechConfig {
     const val MAX_AUDIO_DURATION_SECONDS: Int = 120
     const val MODEL_DIR_RELATIVE: String = "whisper/models"
 
-    /**
-     * Experimental: collapse long VAD silence before Whisper only.
-     * Disabled until physical-device A/B comparison. Never mutates the original WAV.
-     */
     const val ENABLE_VAD_SILENCE_COLLAPSE: Boolean = false
 
     /**
-     * Italian filler-preservation prompt for whisper_full_params.initial_prompt.
-     * Encourages literal hesitations; does not guarantee filler recognition.
+     * Minimal neutral Italian prompt — no vocal-filler vocabulary.
+     * carry_initial_prompt remains false.
      */
-    const val WHISPER_INITIAL_PROMPT: String =
-        "Trascrizione italiana fedele e letterale. Conserva esitazioni e intercalari " +
-            "pronunciati, inclusi: eh, ehm, em, uhm, um, mhm, mmm, cioè, praticamente, " +
-            "diciamo, insomma, tipo, allora, ecco e dunque."
+    const val WHISPER_INITIAL_PROMPT: String = "Trascrizione in italiano."
 
-    /**
-     * carry_initial_prompt=true so the filler vocabulary remains available across
-     * ~90 s decoding windows. The Kotlin layer strips accidental prompt echo.
-     * If device testing shows hallucinations/repetitions, set to false.
-     */
-    const val WHISPER_CARRY_INITIAL_PROMPT: Boolean = true
+    const val WHISPER_CARRY_INITIAL_PROMPT: Boolean = false
 
-    /** suppress_nst=false: non-speech tokens (hesitations) are not suppressed. */
+    /** Non-speech token suppression off; vocal fillers are not product metrics. */
     const val WHISPER_SUPPRESS_NST: Boolean = false
 
-    /**
-     * Debug-only shortened transcript preview. Always false in normal builds;
-     * never enable for user-facing reports.
-     */
     const val ENABLE_DEBUG_TRANSCRIPT_PREVIEW: Boolean = false
 
     const val USER_SAFE_MODEL_ERROR: String =
@@ -125,11 +118,10 @@ object SpeechConfig {
             "Le analisi di corpo e voce restano utilizzabili."
 
     const val USER_SAFE_TRANSCRIPTION_ERROR: String =
-        "Analisi del ritmo non riuscita. Le analisi di corpo e voce restano valide."
+        "Le metriche di ritmo e linguaggio non sono disponibili per questa sessione."
 
     const val METRICS_UNAVAILABLE_REPORT: String =
-        "Le metriche linguistiche non sono disponibili per questa sessione. " +
-            "Le analisi di corpo e voce restano valide."
+        "Le metriche di ritmo e linguaggio non sono disponibili per questa sessione."
 
     const val MODEL_NOT_DOWNLOADED_HINT: String =
         "Per analizzare ritmo e fluidità è necessario scaricare il modello offline."

@@ -64,6 +64,11 @@ data class AudioSessionMetrics(
      * Never equal to [capturedDurationMs]; null when insufficient / error.
      */
     val speechDurationMs: Long? = null,
+    /**
+     * Longest finalized qualified speech segment duration (ms).
+     * Null when insufficient / error.
+     */
+    val longestSpeechSegmentMs: Long? = null,
     val droppedReadCount: Int,
     val sampleRateHz: Int?,
     val audioSourceLabel: String?,
@@ -112,6 +117,7 @@ data class AudioSessionMetrics(
                 inputQuality = AudioInputQuality.INSUFFICIENT_AUDIO,
                 capturedDurationMs = 0L,
                 speechDurationMs = null,
+                longestSpeechSegmentMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
                 audioSourceLabel = null,
@@ -134,6 +140,7 @@ data class AudioSessionMetrics(
                 inputQuality = AudioInputQuality.RECORDING_ERROR,
                 capturedDurationMs = 0L,
                 speechDurationMs = null,
+                longestSpeechSegmentMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
                 audioSourceLabel = null,

@@ -152,7 +152,7 @@ object VoiceReportPresentation {
     fun formatMeanVolumeDbfs(meanSpeechDbfs: Double): String =
         "Volume medio: %.1f dBFS".format(java.util.Locale.ITALY, meanSpeechDbfs)
 
-    const val VOLUME_HINT: String = "più vicino a 0 = più forte"
+    const val VOLUME_HINT: String = "Più vicino a 0 = volume più alto."
 
     const val PAUSE_INTERPRETATION: String =
         "Molte pause brevi possono essere articolazione naturale; " +

@@ -3,18 +3,16 @@ package com.orato.app.speech
 import java.util.Locale
 
 /**
- * Deterministic Italian filler detection with explicit categories.
+ * Deterministic detection of Italian textual discourse markers from recognized text.
  *
- * Whisper may omit or normalize vocal fillers — counts are estimates
- * (“Riempitivi stimati”), not complete acoustic measurements.
+ * Vocal hesitations (eh, ehm, uhm, …) are intentionally excluded — whisper.cpp does not
+ * reliably preserve them, and ORATO does not claim acoustic filler measurement.
+ *
+ * Counts are estimates (“Intercalari discorsivi stimati”).
  */
-object FillerDetector {
+object DiscourseMarkerDetector {
 
-    val VOCAL_FILLERS: Set<String> = setOf(
-        "eh", "ehm", "em", "emm", "uhm", "um", "mhm", "mmm", "mm",
-    )
-
-    val CLEAR_DISCOURSE_FILLERS: Set<String> = setOf(
+    val CLEAR_MARKERS: Set<String> = setOf(
         "cioè", "praticamente", "diciamo", "insomma",
     )
 
@@ -22,17 +20,10 @@ object FillerDetector {
         "tipo", "allora", "ecco", "dunque",
     )
 
-    /** Conservative repeated-letter vocal normalizations (finite map, not open regex). */
-    private val VOCAL_VARIANT_NORMALIZE: Map<String, String> = mapOf(
-        "ehmm" to "ehm",
-        "ehmmm" to "ehm",
-        "ehmmmm" to "ehm",
-        "uhmm" to "uhm",
-        "uhmmm" to "uhm",
-        "mmmm" to "mmm",
-        "mmmmm" to "mmm",
-        "emm" to "emm",
-        "emmm" to "emm",
+    /** Tokens that must never contribute to production discourse-marker counts. */
+    val EXCLUDED_VOCAL_HESITATIONS: Set<String> = setOf(
+        "eh", "ehm", "em", "emm", "uhm", "um", "mhm", "mmm", "mm",
+        "ehmm", "ehmmm", "uhmm", "uhmmm", "mmmm", "mmmmm", "emmm",
     )
 
     private val ARTICLES_BEFORE_TIPO: Set<String> = setOf(
@@ -42,10 +33,10 @@ object FillerDetector {
     )
 
     data class Result(
-        val fillerCount: Int,
+        val totalCount: Int,
         val breakdown: Map<String, Int>,
-        /** Indices of tokens classified as fillers (for repetition de-duplication). */
-        val fillerTokenIndices: Set<Int>,
+        /** Indices of tokens classified as discourse markers (for repetition de-duplication). */
+        val markerTokenIndices: Set<Int>,
     )
 
     fun detect(transcript: String): Result {
@@ -53,9 +44,6 @@ object FillerDetector {
         val spans = TranscriptTokenizer.tokenizeWithSpans(transcript)
         return detect(tokens, spans, transcript)
     }
-
-    fun detect(tokens: List<String>): Result =
-        detect(tokens, emptyList(), tokens.joinToString(" "))
 
     fun detect(
         tokens: List<String>,
@@ -66,17 +54,17 @@ object FillerDetector {
             return Result(0, emptyMap(), emptySet())
         }
         val counts = linkedMapOf<String, Int>()
-        val fillerIndices = mutableSetOf<Int>()
+        val markerIndices = mutableSetOf<Int>()
         var total = 0
 
         for (i in tokens.indices) {
-            val raw = TranscriptTokenizer.normalizeToken(tokens[i])
-            val normalized = normalizeVocalVariant(raw)
+            val normalized = TranscriptTokenizer.normalizeToken(tokens[i])
+            if (normalized in EXCLUDED_VOCAL_HESITATIONS) continue
+
             val counted: String? = when {
-                normalized in VOCAL_FILLERS -> normalized
-                normalized in CLEAR_DISCOURSE_FILLERS -> normalized
+                normalized in CLEAR_MARKERS -> normalized
                 normalized in CONTEXTUAL_MARKERS -> {
-                    if (isContextualFiller(normalized, tokens, i, spans, original)) {
+                    if (isContextualMarker(normalized, tokens, i, spans, original)) {
                         normalized
                     } else {
                         null
@@ -86,19 +74,14 @@ object FillerDetector {
             }
             if (counted != null) {
                 counts[counted] = (counts[counted] ?: 0) + 1
-                fillerIndices.add(i)
+                markerIndices.add(i)
                 total++
             }
         }
-        return Result(total, counts.toMap(), fillerIndices.toSet())
+        return Result(total, counts.toMap(), markerIndices.toSet())
     }
 
-    fun normalizeVocalVariant(token: String): String {
-        val lower = token.lowercase(Locale.ROOT)
-        return VOCAL_VARIANT_NORMALIZE[lower] ?: lower
-    }
-
-    private fun isContextualFiller(
+    private fun isContextualMarker(
         marker: String,
         tokens: List<String>,
         index: Int,
@@ -112,25 +95,20 @@ object FillerDetector {
 
         return when (marker) {
             "tipo" -> {
-                // "un tipo di …" / "tipo di …" → noun construction
                 if (next == "di") return false
                 if (prev != null && prev in ARTICLES_BEFORE_TIPO) return false
-                // Count discourse: start/after punctuation, or comma-framed ", tipo,"
                 boundaryBefore || punctAfter
             }
             "allora" -> {
-                // "da allora" → temporal
                 if (prev == "da") return false
                 boundaryBefore || punctAfter
             }
             "ecco" -> {
-                // "Ecco, …" discourse; "Ecco il documento" without comma → skip
                 if (punctAfter) return true
                 if (next != null && next in ARTICLES_BEFORE_TIPO) return false
                 false
             }
             "dunque" -> {
-                // "Dunque, …" discourse. Bare "Dunque il risultato…" → skip.
                 punctAfter || (index > 0 && boundaryBefore)
             }
             else -> false
@@ -167,4 +145,10 @@ object FillerDetector {
         return c == ',' || c == ';' || c == ':' || c == '.' || c == '!' || c == '?' ||
             c == '…' || c == '-' || c == '—'
     }
+}
+
+/** @deprecated Use [DiscourseMarkerDetector]. Kept as a thin alias during migration tests. */
+@Deprecated("Use DiscourseMarkerDetector", ReplaceWith("DiscourseMarkerDetector"))
+object FillerDetector {
+    fun detect(transcript: String) = DiscourseMarkerDetector.detect(transcript)
 }

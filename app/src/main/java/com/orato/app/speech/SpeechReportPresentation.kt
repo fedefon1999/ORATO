@@ -17,26 +17,19 @@ object SpeechReportPresentation {
         return "$rounded parole/min"
     }
 
-    fun formatFillerCount(count: Int): String = count.toString()
+    fun formatDiscourseMarkerCount(count: Int): String = count.toString()
 
-    fun formatFillersPerMinute(fillersPerMinute: Double?): String {
-        if (fillersPerMinute == null || !fillersPerMinute.isFinite()) return "—"
-        return formatDecimal(fillersPerMinute, 1)
+    fun formatMarkersPerMinute(markersPerMinute: Double?): String {
+        if (markersPerMinute == null || !markersPerMinute.isFinite()) return "—"
+        return formatDecimal(markersPerMinute, 1)
     }
 
     fun formatImmediateRepetitions(count: Int): String = count.toString()
 
-    fun formatFillerBreakdown(breakdown: Map<String, Int>): String {
+    fun formatMarkerBreakdown(breakdown: Map<String, Int>): String {
         if (breakdown.isEmpty()) return ""
         return breakdown.entries.joinToString(separator = "\n") { (word, n) ->
             "$word: $n"
-        }
-    }
-
-    fun formatFillerBreakdownCompact(breakdown: Map<String, Int>): String {
-        if (breakdown.isEmpty()) return ""
-        return breakdown.entries.joinToString(separator = ", ") { (word, n) ->
-            if (n == 1) word else "$word×$n"
         }
     }
 
@@ -76,24 +69,4 @@ object SpeechReportPresentation {
             is TranscriptionState.Error -> state.userSafeMessage
             TranscriptionState.Cancelled -> SpeechConfig.METRICS_UNAVAILABLE_REPORT
         }
-
-    /** Presentation model for the normal report — metrics only, no transcript. */
-    data class RhythmFluencyPresentation(
-        val wordCountLabel: String,
-        val wpmLabel: String,
-        val fillerCountLabel: String,
-        val fillersPerMinuteLabel: String,
-        val fillerBreakdownLines: List<Pair<String, Int>>,
-        val immediateRepetitionLabel: String,
-    )
-
-    fun rhythmFluency(metrics: SpeechIntelligenceMetrics): RhythmFluencyPresentation =
-        RhythmFluencyPresentation(
-            wordCountLabel = formatWordCount(metrics.wordCount),
-            wpmLabel = formatWpm(metrics.wordsPerMinute),
-            fillerCountLabel = formatFillerCount(metrics.fillerCount),
-            fillersPerMinuteLabel = formatFillersPerMinute(metrics.fillersPerMinute),
-            fillerBreakdownLines = metrics.fillerBreakdown.entries.map { it.key to it.value },
-            immediateRepetitionLabel = formatImmediateRepetitions(metrics.immediateRepetitionCount),
-        )
 }

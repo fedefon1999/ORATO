@@ -20,25 +20,27 @@ object SpeechMetricsCalculator {
         val tokens = TranscriptTokenizer.tokenize(cleaned)
         val spans = TranscriptTokenizer.tokenizeWithSpans(cleaned)
         val wordCount = tokens.size
-        val fillers = FillerDetector.detect(tokens, spans, cleaned)
+        val markers = DiscourseMarkerDetector.detect(tokens, spans, cleaned)
         val repetitions = ImmediateRepetitionDetector.detect(
             tokens = tokens,
             spans = spans,
             original = cleaned,
-            fillerTokenIndices = fillers.fillerTokenIndices,
+            fillerTokenIndices = markers.markerTokenIndices,
         )
         val qualityOk = isAudioQualityValidForWpm(audio)
         val empty = cleaned.isBlank() || wordCount == 0
         val wpm = wordsPerMinute(wordCount, vadSpeechDurationMs, empty, qualityOk)
-        val fpm = ratePerMinute(fillers.fillerCount, vadSpeechDurationMs, empty, qualityOk)
+        val mpm = markersPerMinute(markers.totalCount, vadSpeechDurationMs, empty, qualityOk)
 
         return SpeechIntelligenceMetrics(
             wordCount = wordCount,
             vadSpeechDurationMs = vadSpeechDurationMs.coerceAtLeast(0L),
             wordsPerMinute = wpm,
-            fillerCount = fillers.fillerCount,
-            fillersPerMinute = fpm,
-            fillerBreakdown = fillers.breakdown,
+            discourseMarkers = DiscourseMarkerMetrics(
+                totalCount = markers.totalCount,
+                markersPerMinute = mpm,
+                breakdown = markers.breakdown,
+            ),
             immediateRepetitionCount = repetitions.count,
             immediateRepetitionBreakdown = repetitions.breakdown,
         )
@@ -51,14 +53,23 @@ object SpeechMetricsCalculator {
         audioQualityValid: Boolean,
     ): Double? = ratePerMinute(wordCount, vadSpeechDurationMs, transcriptEmpty || wordCount <= 0, audioQualityValid)
 
+    fun markersPerMinute(
+        markerCount: Int,
+        vadSpeechDurationMs: Long,
+        transcriptEmpty: Boolean,
+        audioQualityValid: Boolean,
+    ): Double? = ratePerMinute(markerCount, vadSpeechDurationMs, transcriptEmpty, audioQualityValid)
+
+    /** @deprecated Use [markersPerMinute]. */
+    @Deprecated("Use markersPerMinute", ReplaceWith("markersPerMinute(fillerCount, vadSpeechDurationMs, transcriptEmpty, audioQualityValid)"))
     fun fillersPerMinute(
         fillerCount: Int,
         vadSpeechDurationMs: Long,
         transcriptEmpty: Boolean,
         audioQualityValid: Boolean,
-    ): Double? = ratePerMinute(fillerCount, vadSpeechDurationMs, transcriptEmpty, audioQualityValid)
+    ): Double? = markersPerMinute(fillerCount, vadSpeechDurationMs, transcriptEmpty, audioQualityValid)
 
-    private fun ratePerMinute(
+    fun ratePerMinute(
         count: Int,
         vadSpeechDurationMs: Long,
         unavailable: Boolean,
@@ -73,6 +84,17 @@ object SpeechMetricsCalculator {
         return if (rate.isFinite()) rate else null
     }
 
+    fun significantPausesPerMinute(
+        significantPauseCount: Int,
+        vadSpeechDurationMs: Long,
+        audioQualityValid: Boolean,
+    ): Double? = ratePerMinute(
+        count = significantPauseCount,
+        vadSpeechDurationMs = vadSpeechDurationMs,
+        unavailable = false,
+        audioQualityValid = audioQualityValid,
+    )
+
     fun isAudioQualityValidForWpm(audio: AudioSessionMetrics): Boolean {
         if (audio.insufficientData) return false
         return when (audio.inputQuality) {
@@ -86,23 +108,12 @@ object SpeechMetricsCalculator {
         }
     }
 
-    /**
-     * Removes accidental echo of [SpeechConfig.WHISPER_INITIAL_PROMPT] from recognition output.
-     */
     fun stripInitialPromptEcho(transcript: String): String {
         val prompt = SpeechConfig.WHISPER_INITIAL_PROMPT.trim()
+        if (prompt.isEmpty()) return transcript.trim()
         var text = transcript.trim()
         if (text.startsWith(prompt)) {
             text = text.removePrefix(prompt).trimStart(' ', ',', '.', ':', ';', '-', '\n')
-        }
-        // Also drop if the model emits the filler list line alone as a prefix sentence.
-        val marker = "Conserva esitazioni e intercalari"
-        val idx = text.indexOf(marker)
-        if (idx in 0..40) {
-            val end = text.indexOf('.', idx).let { if (it >= 0) it + 1 else -1 }
-            if (end > 0) {
-                text = text.substring(end).trim()
-            }
         }
         return text
     }
