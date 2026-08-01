@@ -29,10 +29,6 @@ object FaceMetricsConfig {
     /** @deprecated Prefer [CALIBRATION_MIN_ACCEPTED_SAMPLES] with duration gate. */
     const val CALIBRATION_REQUIRED_ACCEPTED_SAMPLES = CALIBRATION_MIN_ACCEPTED_SAMPLES
 
-    // Interview upper-body (pose) gates during calibration
-    const val INTERVIEW_MIN_SHOULDER_VISIBILITY = 0.45f
-    const val UPPER_BODY_EVIDENCE_MAX_AGE_MS = 300L
-
     // Gaze — independent horizontal / vertical iris thresholds
     const val GAZE_MAX_REL_YAW_DEG = 12f
     const val GAZE_MAX_REL_PITCH_DEG = 10f

@@ -134,7 +134,7 @@ class FaceLandmarkerClient(
 
     /**
      * Consumes [imageProxy] exactly once (always closed).
-     * @param requestToken optional external token from [com.orato.app.vision.VisualFrameScheduler]
+     * @param requestToken optional external correlation token for terminal callbacks
      * @param captureTimestampMs monotonic capture time; defaults to uptime when omitted
      */
     fun detectLiveStream(

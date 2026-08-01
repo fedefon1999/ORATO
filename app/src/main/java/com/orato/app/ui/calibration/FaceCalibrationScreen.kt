@@ -37,7 +37,6 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.orato.app.domain.model.Scenario
 import com.orato.app.domain.model.VisualAnalysisMapping
-import com.orato.app.domain.model.VisualAnalysisMode
 import com.orato.app.face.FaceCalibrationManager
 import com.orato.app.face.FaceCalibrationProgress
 import com.orato.app.face.FaceCalibrationProfile
@@ -54,11 +53,8 @@ fun FaceCalibrationScreen(
     modifier: Modifier = Modifier,
 ) {
     val mode = VisualAnalysisMapping.modeFor(scenario)
-    val requireUpperTorso = mode == VisualAnalysisMode.BODY_AND_FACE
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
-    val calibrationManager = remember(requireUpperTorso) {
-        FaceCalibrationManager(requireUpperTorso = requireUpperTorso)
-    }
+    val calibrationManager = remember { FaceCalibrationManager() }
     var progress by remember {
         mutableStateOf(
             FaceCalibrationProgress(
@@ -69,7 +65,6 @@ fun FaceCalibrationScreen(
                 requiredDurationMs = com.orato.app.face.FaceMetricsConfig.MIN_VALID_CALIBRATION_DURATION_MS,
                 faceValid = false,
                 irisValid = false,
-                shouldersValid = if (requireUpperTorso) false else null,
             ),
         )
     }
@@ -144,15 +139,6 @@ fun FaceCalibrationScreen(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (requireUpperTorso) {
-                Text(
-                    text = "Assicurati che siano visibili il viso, le spalle e la parte superiore del busto.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
 
             Box(
                 modifier = Modifier
@@ -162,9 +148,6 @@ fun FaceCalibrationScreen(
             ) {
                 FrontCameraPreview(
                     visualAnalysisMode = mode,
-                    onPoseFrame = { pose ->
-                        calibrationManager.onPoseFrame(pose)
-                    },
                     onFaceFrame = { frame ->
                         val next = calibrationManager.process(frame)
                         progress = next
@@ -188,7 +171,6 @@ fun FaceCalibrationScreen(
                 )
             }
 
-            // Truthful progress from accepted stable samples — not elapsed time.
             LinearProgressIndicator(
                 progress = { progress.progressFraction.coerceIn(0f, 1f) },
                 modifier = Modifier.fillMaxWidth(),
@@ -225,6 +207,5 @@ private fun calibrationStatusLabel(state: FaceCalibrationUiState): String =
         FaceCalibrationUiState.MOVE_FARTHER -> "Allontanati leggermente"
         FaceCalibrationUiState.LOOK_AT_CAMERA -> "Guarda la videocamera"
         FaceCalibrationUiState.HOLD_STILL -> "Mantieni la posizione"
-        FaceCalibrationUiState.SHOW_SHOULDERS -> "Rendi visibili anche le spalle"
         FaceCalibrationUiState.COMPLETED -> "Calibrazione completata"
     }

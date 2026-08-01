@@ -1,7 +1,5 @@
 package com.orato.app.face
 
-import com.orato.app.pose.PoseLandmarkId
-import com.orato.app.pose.UpperBodyPoseFrame
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -12,16 +10,8 @@ enum class FaceCalibrationUiState {
     MOVE_FARTHER,
     LOOK_AT_CAMERA,
     HOLD_STILL,
-    SHOW_SHOULDERS,
     COMPLETED,
 }
-
-data class UpperBodyCalibrationEvidence(
-    val timestampMs: Long,
-    val shouldersValid: Boolean,
-    val torsoValid: Boolean,
-    val sessionId: Long,
-)
 
 data class FaceCalibrationProgress(
     val uiState: FaceCalibrationUiState,
@@ -31,8 +21,6 @@ data class FaceCalibrationProgress(
     val requiredDurationMs: Long,
     val faceValid: Boolean,
     val irisValid: Boolean,
-    val shouldersValid: Boolean?,
-    val upperBodyEvidenceAgeMs: Long? = null,
     val profile: FaceCalibrationProfile? = null,
 ) {
     /**
@@ -58,20 +46,18 @@ data class FaceCalibrationProgress(
  * Session-specific face calibration requiring a continuous valid window of at least
  * [FaceMetricsConfig.MIN_VALID_CALIBRATION_DURATION_MS].
  *
+ * Face Landmarker only — no Pose / upper-body dependency.
  * Does not persist biometric geometry.
  */
 class FaceCalibrationManager(
-    private val requireUpperTorso: Boolean = false,
     private val requiredSamples: Int = FaceMetricsConfig.CALIBRATION_MIN_ACCEPTED_SAMPLES,
     private val requiredDurationMs: Long = FaceMetricsConfig.MIN_VALID_CALIBRATION_DURATION_MS,
-    private val sessionId: Long = 0L,
 ) {
     private val samples = mutableListOf<FaceFrame>()
     private var completedProfile: FaceCalibrationProfile? = null
     private var windowStartMs: Long = -1L
     private var lastAcceptedMs: Long = -1L
     private var lastAnyMs: Long = -1L
-    private var lastUpperBody: UpperBodyCalibrationEvidence? = null
 
     fun reset() {
         samples.clear()
@@ -79,25 +65,6 @@ class FaceCalibrationManager(
         windowStartMs = -1L
         lastAcceptedMs = -1L
         lastAnyMs = -1L
-        lastUpperBody = null
-    }
-
-    fun onPoseFrame(pose: UpperBodyPoseFrame?, poseSessionId: Long = sessionId) {
-        if (!requireUpperTorso) {
-            lastUpperBody = null
-            return
-        }
-        if (pose == null) return
-        if (poseSessionId != sessionId) return
-        val shoulders = hasVisibleShoulders(pose)
-        val torso = hasVisibleUpperTorso(pose)
-        val ts = pose.timestampMs.takeIf { it > 0L } ?: return
-        lastUpperBody = UpperBodyCalibrationEvidence(
-            timestampMs = ts,
-            shouldersValid = shoulders,
-            torsoValid = torso,
-            sessionId = poseSessionId,
-        )
     }
 
     fun process(frame: FaceFrame): FaceCalibrationProgress {
@@ -107,16 +74,14 @@ class FaceCalibrationManager(
 
         val now = frame.timestampMs
         if (lastAnyMs >= 0L && now < lastAnyMs) {
-            return currentProgress(uiHint(frame, validateFace(frame), upperBodyOk(now)))
+            return currentProgress(uiHint(frame, validateFace(frame)))
         }
         lastAnyMs = now
 
         val faceCheck = validateFace(frame)
-        val bodyOk = upperBodyOk(now)
-        val uiState = uiHint(frame, faceCheck, bodyOk)
+        val uiState = uiHint(frame, faceCheck)
 
         val accept = faceCheck == FaceValidityReason.OK &&
-            bodyOk &&
             frame.leftIrisHorizontalRatio != null &&
             frame.rightIrisHorizontalRatio != null &&
             frame.headYawDeg != null &&
@@ -173,8 +138,6 @@ class FaceCalibrationManager(
             requiredDurationMs = requiredDurationMs,
             faceValid = faceCheck == FaceValidityReason.OK,
             irisValid = frame.leftIrisHorizontalRatio != null && frame.rightIrisHorizontalRatio != null,
-            shouldersValid = if (requireUpperTorso) bodyOk else null,
-            upperBodyEvidenceAgeMs = upperBodyAge(now),
         )
     }
 
@@ -201,38 +164,6 @@ class FaceCalibrationManager(
         return FaceValidityReason.OK
     }
 
-    fun hasVisibleShouldersAndTorso(pose: UpperBodyPoseFrame): Boolean =
-        hasVisibleShoulders(pose) && hasVisibleUpperTorso(pose)
-
-    fun hasVisibleShoulders(pose: UpperBodyPoseFrame): Boolean {
-        val ls = pose.landmarks[PoseLandmarkId.LEFT_SHOULDER] ?: return false
-        val rs = pose.landmarks[PoseLandmarkId.RIGHT_SHOULDER] ?: return false
-        val minVis = FaceMetricsConfig.INTERVIEW_MIN_SHOULDER_VISIBILITY
-        return ls.visibility >= minVis && rs.visibility >= minVis
-    }
-
-    fun hasVisibleUpperTorso(pose: UpperBodyPoseFrame): Boolean {
-        val minVis = FaceMetricsConfig.INTERVIEW_MIN_SHOULDER_VISIBILITY * 0.8f
-        val lh = pose.landmarks[PoseLandmarkId.LEFT_HIP]
-        val rh = pose.landmarks[PoseLandmarkId.RIGHT_HIP]
-        return (lh != null && lh.visibility >= minVis) || (rh != null && rh.visibility >= minVis)
-    }
-
-    private fun upperBodyOk(nowMs: Long): Boolean {
-        if (!requireUpperTorso) return true
-        val evidence = lastUpperBody ?: return false
-        if (evidence.sessionId != sessionId) return false
-        val age = nowMs - evidence.timestampMs
-        if (age < 0L || age > FaceMetricsConfig.UPPER_BODY_EVIDENCE_MAX_AGE_MS) return false
-        return evidence.shouldersValid && evidence.torsoValid
-    }
-
-    private fun upperBodyAge(nowMs: Long): Long? {
-        if (!requireUpperTorso) return null
-        val evidence = lastUpperBody ?: return null
-        return nowMs - evidence.timestampMs
-    }
-
     private fun continuousDurationMs(): Long =
         if (windowStartMs >= 0L && lastAcceptedMs >= windowStartMs) {
             lastAcceptedMs - windowStartMs
@@ -243,7 +174,6 @@ class FaceCalibrationManager(
     private fun uiHint(
         frame: FaceFrame,
         faceCheck: FaceValidityReason,
-        bodyOk: Boolean,
     ): FaceCalibrationUiState = when {
         !frame.facePresent -> FaceCalibrationUiState.POSITION_FACE
         faceCheck == FaceValidityReason.FACE_TOO_SMALL -> FaceCalibrationUiState.MOVE_CLOSER
@@ -254,14 +184,11 @@ class FaceCalibrationManager(
         faceCheck == FaceValidityReason.IRIS_INVALID ||
             faceCheck == FaceValidityReason.HEAD_ROTATION_EXCESSIVE ||
             faceCheck == FaceValidityReason.BLINKING -> FaceCalibrationUiState.LOOK_AT_CAMERA
-        requireUpperTorso && !bodyOk -> FaceCalibrationUiState.SHOW_SHOULDERS
         else -> FaceCalibrationUiState.HOLD_STILL
     }
 
-    private fun currentProgress(
-        uiState: FaceCalibrationUiState,
-    ): FaceCalibrationProgress {
-        return FaceCalibrationProgress(
+    private fun currentProgress(uiState: FaceCalibrationUiState): FaceCalibrationProgress =
+        FaceCalibrationProgress(
             uiState = uiState,
             acceptedSamples = samples.size,
             requiredSamples = requiredSamples,
@@ -269,9 +196,7 @@ class FaceCalibrationManager(
             requiredDurationMs = requiredDurationMs,
             faceValid = false,
             irisValid = false,
-            shouldersValid = if (requireUpperTorso) false else null,
         )
-    }
 
     private fun completedProgress(profile: FaceCalibrationProfile): FaceCalibrationProgress =
         FaceCalibrationProgress(
@@ -282,7 +207,6 @@ class FaceCalibrationManager(
             requiredDurationMs = requiredDurationMs,
             faceValid = true,
             irisValid = true,
-            shouldersValid = if (requireUpperTorso) true else null,
             profile = profile,
         )
 
