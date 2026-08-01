@@ -180,7 +180,7 @@ class ReportPreparationCoordinatorTest {
         )
         assertTrue(ReportSection.RHYTHM_AND_FLUENCY in ready.report.unavailableSections)
         assertEquals(audioMetrics.meanSpeechDbfs, ready.report.voice.meanSpeechDbfs)
-        assertEquals(audioMetrics.speechRatioPercent, ready.report.voice.speechRatioPercent)
+        assertEquals(audioMetrics.speechDurationMs, ready.report.voice.speechSpanDurationMs)
         assertFalse(ready.report.voice.insufficientData)
         assertEquals(body.hasInsufficientData, ready.report.body.session.hasInsufficientData)
         assertEquals(LinguisticUnavailableReason.INFERENCE_FAILED, c.lastLinguisticDiagnostics?.reason)

@@ -93,12 +93,14 @@ class SpeechMetricsCalculatorTest {
         )
 
     @Test
-    fun correctWpm_usesVadSpeechDuration() {
+    fun correctWpm_usesSpeechSpanDuration() {
         val words = (1..120).joinToString(" ") { "parola" }
+        // Denominator is discourse span (first→last), not raw voiced frames.
         val metrics = SpeechMetricsCalculator.compute(words, 60_000L, audio(speechMs = 60_000L, capturedMs = 90_000L))
         assertNotNull(metrics)
         assertEquals(120, metrics!!.wordCount)
         assertEquals(120.0, metrics.wordsPerMinute!!, 1e-9)
+        assertEquals(60_000L, metrics.vadSpeechDurationMs)
     }
 
     @Test
@@ -725,6 +727,9 @@ class SpeechTranscriberFakeTest {
         assertFalse(text.contains("Riempitivi stimati"))
         assertTrue(text.contains("Ritmo e fluidità"))
         assertTrue(text.contains("Intercalari discorsivi"))
+        assertTrue(text.contains("Durata del discorso"))
+        assertFalse(text.contains("Tempo effettivo di parlato"))
+        assertFalse(text.contains("rawVoiced"))
         assertFalse(text.contains("metrics.transcript"))
     }
 

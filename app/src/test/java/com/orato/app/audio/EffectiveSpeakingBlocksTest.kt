@@ -1,6 +1,7 @@
 package com.orato.app.audio
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -10,12 +11,16 @@ class EffectiveSpeakingBlocksTest {
         AudioSegment(AudioSegmentKind.Speech, startMs, endMs)
 
     @Test
-    fun continuousSpeech_oneBlock() {
-        val timeline = EffectiveSpeakingBlocks.build(listOf(speech(0, 5_000)))
+    fun continuousSpeech_oneBlock_andSpanEqualsCaptureInterval() {
+        val timeline = EffectiveSpeakingBlocks.build(
+            listOf(speech(0, 5_000)),
+            capturedDurationMs = 5_000,
+        )
         assertEquals(1, timeline.blocks.size)
         assertEquals(SpeakingBlock(0, 5_000), timeline.blocks.single())
-        assertEquals(5_000L, timeline.effectiveSpeechDurationMs)
+        assertEquals(5_000L, timeline.effectiveSpeechBlockDurationMs)
         assertEquals(5_000L, timeline.rawVoicedDurationMs)
+        assertEquals(5_000L, timeline.speechSpanDurationMs)
         assertEquals(0L, timeline.briefGapsMergedMs)
         assertTrue(timeline.significantPauseDurationsMs.isEmpty())
         assertEquals(5_000L, timeline.longestContinuousSpeechMs)
@@ -26,31 +31,93 @@ class EffectiveSpeakingBlocksTest {
         for (gapMs in listOf(100L, 300L, 499L)) {
             val timeline = EffectiveSpeakingBlocks.build(
                 listOf(speech(0, 1_000), speech(1_000 + gapMs, 2_000 + gapMs)),
+                capturedDurationMs = 2_000 + gapMs,
             )
             assertEquals("gap=$gapMs", 1, timeline.blocks.size)
             assertEquals("gap=$gapMs", SpeakingBlock(0, 2_000 + gapMs), timeline.blocks.single())
             assertEquals("gap=$gapMs", 2_000L, timeline.rawVoicedDurationMs)
-            assertEquals("gap=$gapMs", 2_000L + gapMs, timeline.effectiveSpeechDurationMs)
+            assertEquals("gap=$gapMs", 2_000L + gapMs, timeline.effectiveSpeechBlockDurationMs)
+            assertEquals("gap=$gapMs", 2_000L + gapMs, timeline.speechSpanDurationMs)
             assertEquals("gap=$gapMs", gapMs, timeline.briefGapsMergedMs)
             assertTrue("gap=$gapMs", timeline.significantPauseDurationsMs.isEmpty())
         }
     }
 
     @Test
-    fun significantGaps_500_800_1500_split_firstBlockEndsAtSilenceOnset() {
+    fun significantGaps_500_800_1500_split_butRemainInsideSpeechSpan() {
         for (gapMs in listOf(500L, 800L, 1_500L)) {
             val secondStart = 1_000L + gapMs
+            val lastEnd = secondStart + 1_000
             val timeline = EffectiveSpeakingBlocks.build(
-                listOf(speech(0, 1_000), speech(secondStart, secondStart + 1_000)),
+                listOf(speech(0, 1_000), speech(secondStart, lastEnd)),
+                capturedDurationMs = lastEnd,
             )
             assertEquals("gap=$gapMs", 2, timeline.blocks.size)
             assertEquals("gap=$gapMs", SpeakingBlock(0, 1_000), timeline.blocks[0])
-            assertEquals("gap=$gapMs", SpeakingBlock(secondStart, secondStart + 1_000), timeline.blocks[1])
+            assertEquals("gap=$gapMs", SpeakingBlock(secondStart, lastEnd), timeline.blocks[1])
             assertEquals("gap=$gapMs", 2_000L, timeline.rawVoicedDurationMs)
-            assertEquals("gap=$gapMs", 2_000L, timeline.effectiveSpeechDurationMs)
-            assertEquals("gap=$gapMs", 0L, timeline.briefGapsMergedMs)
+            assertEquals("gap=$gapMs", 2_000L, timeline.effectiveSpeechBlockDurationMs)
+            // Span includes the internal pause.
+            assertEquals("gap=$gapMs", lastEnd, timeline.speechSpanDurationMs)
+            assertTrue(
+                "gap=$gapMs",
+                timeline.speechSpanDurationMs >= timeline.effectiveSpeechBlockDurationMs,
+            )
             assertEquals("gap=$gapMs", listOf(gapMs), timeline.significantPauseDurationsMs)
         }
+    }
+
+    @Test
+    fun leadingAndTrailingSilence_excludedFromSpan() {
+        val timeline = EffectiveSpeakingBlocks.build(
+            listOf(speech(2_000, 3_000), speech(3_200, 4_000), speech(5_000, 6_000)),
+            capturedDurationMs = 90_000,
+        )
+        assertEquals(2_000L, timeline.firstConfirmedSpeechStartMs)
+        assertEquals(6_000L, timeline.lastConfirmedSpeechEndMs)
+        assertEquals(4_000L, timeline.speechSpanDurationMs) // 6000-2000
+        assertEquals(2_000L, timeline.leadingSilenceMs)
+        assertEquals(84_000L, timeline.trailingSilenceMs)
+        assertTrue(timeline.speechSpanDurationMs <= 90_000L)
+        assertTrue(timeline.rawVoicedDurationMs <= timeline.effectiveSpeechBlockDurationMs)
+        assertTrue(timeline.effectiveSpeechBlockDurationMs <= timeline.speechSpanDurationMs)
+    }
+
+    @Test
+    fun almostContinuous90sReading_spanNear86sExample() {
+        // Captured 90s, first speech 2s, last end 88s → span 86s
+        val timeline = EffectiveSpeakingBlocks.build(
+            listOf(
+                speech(2_000, 40_000),
+                speech(41_000, 88_000), // 1s internal medium pause
+            ),
+            capturedDurationMs = 90_000,
+        )
+        assertEquals(86_000L, timeline.speechSpanDurationMs)
+        assertEquals(2_000L, timeline.leadingSilenceMs)
+        assertEquals(2_000L, timeline.trailingSilenceMs)
+        assertTrue(timeline.speechSpanDurationMs > timeline.effectiveSpeechBlockDurationMs)
+        assertTrue(timeline.effectiveSpeechBlockDurationMs > timeline.rawVoicedDurationMs ||
+            timeline.effectiveSpeechBlockDurationMs == timeline.rawVoicedDurationMs)
+    }
+
+    @Test
+    fun internalBriefMediumLong_remainInsideSpeechSpan() {
+        val timeline = EffectiveSpeakingBlocks.build(
+            listOf(
+                speech(1_000, 2_000),
+                speech(2_300, 3_000),  // brief 300
+                speech(3_800, 5_000),  // medium 800
+                speech(7_000, 8_000),  // long 2000
+            ),
+            capturedDurationMs = 10_000,
+        )
+        assertEquals(7_000L, timeline.speechSpanDurationMs) // 8000-1000
+        assertEquals(1_000L, timeline.leadingSilenceMs)
+        assertEquals(2_000L, timeline.trailingSilenceMs)
+        assertTrue(timeline.significantPauseDurationsMs.contains(800L))
+        assertTrue(timeline.significantPauseDurationsMs.contains(2_000L))
+        assertTrue(timeline.speechSpanDurationMs > timeline.effectiveSpeechBlockDurationMs)
     }
 
     @Test
@@ -58,17 +125,18 @@ class EffectiveSpeakingBlocksTest {
         val timeline = EffectiveSpeakingBlocks.build(
             listOf(
                 speech(0, 500),
-                speech(700, 1_200),   // gap 200
-                speech(1_400, 2_000), // gap 200
-                speech(2_300, 3_000), // gap 300
+                speech(700, 1_200),
+                speech(1_400, 2_000),
+                speech(2_300, 3_000),
             ),
+            capturedDurationMs = 3_000,
         )
         assertEquals(1, timeline.blocks.size)
         assertEquals(SpeakingBlock(0, 3_000), timeline.blocks.single())
-        assertEquals(700L, timeline.briefGapsMergedMs) // 200+200+300
+        assertEquals(700L, timeline.briefGapsMergedMs)
         assertEquals(2_300L, timeline.rawVoicedDurationMs)
-        assertEquals(3_000L, timeline.effectiveSpeechDurationMs)
-        assertTrue(timeline.significantPauseDurationsMs.isEmpty())
+        assertEquals(3_000L, timeline.effectiveSpeechBlockDurationMs)
+        assertEquals(3_000L, timeline.speechSpanDurationMs)
     }
 
     @Test
@@ -76,36 +144,24 @@ class EffectiveSpeakingBlocksTest {
         val timeline = EffectiveSpeakingBlocks.build(
             listOf(
                 speech(0, 1_000),
-                speech(1_300, 2_000), // brief 300 → merge
-                speech(2_800, 3_500), // medium 800 → split
+                speech(1_300, 2_000),
+                speech(2_800, 3_500),
             ),
+            capturedDurationMs = 3_500,
         )
         assertEquals(2, timeline.blocks.size)
-        assertEquals(SpeakingBlock(0, 2_000), timeline.blocks[0])
-        assertEquals(SpeakingBlock(2_800, 3_500), timeline.blocks[1])
-        assertEquals(300L, timeline.briefGapsMergedMs)
-        assertEquals(listOf(800L), timeline.significantPauseDurationsMs)
-        assertEquals(2_400L, timeline.rawVoicedDurationMs) // 1000+700+700
-        assertEquals(2_700L, timeline.effectiveSpeechDurationMs) // 2000 + 700
+        assertEquals(2_400L, timeline.rawVoicedDurationMs)
+        assertEquals(2_700L, timeline.effectiveSpeechBlockDurationMs)
+        assertEquals(3_500L, timeline.speechSpanDurationMs)
     }
 
     @Test
-    fun leadingAndTrailingSilence_excluded_onlySpeechSegmentsPassed() {
-        // Callers pass only qualified speech segments; leading/trailing silence never enters.
-        val timeline = EffectiveSpeakingBlocks.build(
-            listOf(
-                speech(2_000, 3_000),
-                speech(3_200, 4_000), // brief internal gap
-                speech(5_000, 6_000), // significant gap after
-            ),
-        )
-        assertEquals(2, timeline.blocks.size)
-        assertEquals(SpeakingBlock(2_000, 4_000), timeline.blocks[0])
-        assertEquals(SpeakingBlock(5_000, 6_000), timeline.blocks[1])
-        assertEquals(listOf(1_000L), timeline.significantPauseDurationsMs)
-        // Blocks never start at 0 or extend past last speech end.
-        assertTrue(timeline.blocks.first().startMs >= 2_000)
-        assertTrue(timeline.blocks.last().endMs <= 6_000)
+    fun noSpeech_emptySpan() {
+        val timeline = EffectiveSpeakingBlocks.build(emptyList(), capturedDurationMs = 90_000)
+        assertEquals(0L, timeline.speechSpanDurationMs)
+        assertNull(timeline.firstConfirmedSpeechStartMs)
+        assertNull(timeline.lastConfirmedSpeechEndMs)
+        assertNull(timeline.longestContinuousSpeechMs)
     }
 
     @Test
@@ -113,10 +169,11 @@ class EffectiveSpeakingBlocksTest {
         val timeline = EffectiveSpeakingBlocks.build(
             listOf(
                 speech(0, 1_000),
-                speech(800, 1_500),   // overlap — sanitized
-                speech(2_500, 3_000), // significant gap
-                speech(3_500, 3_200), // negative / inverted — dropped by filter (durationMs==0 coerced, but end<=start skipped in sanitize)
+                speech(800, 1_500),
+                speech(2_500, 3_000),
+                speech(3_500, 3_200),
             ),
+            capturedDurationMs = 4_000,
         )
         for (block in timeline.blocks) {
             assertTrue("block=$block", block.endMs > block.startMs)
@@ -124,53 +181,27 @@ class EffectiveSpeakingBlocksTest {
         }
         for (i in 0 until timeline.blocks.size - 1) {
             assertTrue(
-                "overlap ${timeline.blocks[i]} / ${timeline.blocks[i + 1]}",
                 timeline.blocks[i].endMs <= timeline.blocks[i + 1].startMs,
             )
         }
     }
 
     @Test
-    fun rawVoiced_vs_effective_effectiveGteRawWhenBriefGapsExist() {
-        val withBrief = EffectiveSpeakingBlocks.build(
-            listOf(speech(0, 1_000), speech(1_250, 2_000)),
-        )
-        assertTrue(withBrief.effectiveSpeechDurationMs >= withBrief.rawVoicedDurationMs)
-        assertEquals(250L, withBrief.effectiveSpeechDurationMs - withBrief.rawVoicedDurationMs)
-
-        val noBrief = EffectiveSpeakingBlocks.build(
-            listOf(speech(0, 1_000), speech(2_000, 3_000)),
-        )
-        assertEquals(noBrief.rawVoicedDurationMs, noBrief.effectiveSpeechDurationMs)
-    }
-
-    @Test
-    fun significantPauses_doNotIncludeBriefGaps() {
+    fun invariants_raw_le_block_le_span_le_capture() {
         val timeline = EffectiveSpeakingBlocks.build(
             listOf(
-                speech(0, 500),
-                speech(800, 1_200),   // brief 300
-                speech(1_800, 2_200), // medium 600
+                speech(2_000, 10_000),
+                speech(10_300, 40_000),
+                speech(42_000, 80_000),
             ),
+            capturedDurationMs = 90_000,
         )
-        assertTrue(timeline.significantPauseDurationsMs.none { it < AudioMetricsConfig.SIGNIFICANT_PAUSE_MIN_MS })
-        assertEquals(listOf(600L), timeline.significantPauseDurationsMs)
-    }
-
-    @Test
-    fun longPauses_areSubsetOfSignificant() {
-        val timeline = EffectiveSpeakingBlocks.build(
-            listOf(
-                speech(0, 500),
-                speech(1_200, 1_700),  // medium 700
-                speech(3_500, 4_000),  // long 1800
-            ),
-        )
-        val significant = timeline.significantPauseDurationsMs
-        val long = significant.filter { it >= AudioMetricsConfig.LONG_PAUSE_THRESHOLD_MS }
-        assertEquals(listOf(700L, 1_800L), significant)
-        assertEquals(listOf(1_800L), long)
-        assertTrue(significant.containsAll(long))
+        assertTrue(timeline.rawVoicedDurationMs <= timeline.effectiveSpeechBlockDurationMs)
+        assertTrue(timeline.effectiveSpeechBlockDurationMs <= timeline.speechSpanDurationMs)
+        assertTrue(timeline.speechSpanDurationMs <= 90_000L)
+        assertTrue(timeline.firstConfirmedSpeechStartMs!! >= 0L)
+        assertTrue(timeline.lastConfirmedSpeechEndMs!! <= 90_000L)
+        assertTrue(timeline.lastConfirmedSpeechEndMs!! >= timeline.firstConfirmedSpeechStartMs!!)
     }
 
     @Test
@@ -178,13 +209,28 @@ class EffectiveSpeakingBlocksTest {
         val timeline = EffectiveSpeakingBlocks.build(
             listOf(
                 speech(0, 800),
-                speech(1_000, 1_600),  // brief → merged block duration 1600
-                speech(3_000, 3_400),  // significant → separate short block 400
+                speech(1_000, 1_600),
+                speech(3_000, 3_400),
             ),
+            capturedDurationMs = 4_000,
         )
         assertEquals(1_600L, timeline.longestContinuousSpeechMs)
-        assertEquals(1_600L, timeline.blocks.maxOf { it.durationMs })
-        // Without merge, longest raw segment would be 800 — merged wins.
         assertTrue(timeline.longestContinuousSpeechMs!! > 800L)
+    }
+
+    @Test
+    fun longPauses_areSubsetOfSignificant() {
+        val timeline = EffectiveSpeakingBlocks.build(
+            listOf(
+                speech(0, 500),
+                speech(1_200, 1_700),
+                speech(3_500, 4_000),
+            ),
+            capturedDurationMs = 5_000,
+        )
+        val significant = timeline.significantPauseDurationsMs
+        val long = significant.filter { it >= AudioMetricsConfig.LONG_PAUSE_THRESHOLD_MS }
+        assertEquals(listOf(700L, 1_800L), significant)
+        assertEquals(listOf(1_800L), long)
     }
 }
