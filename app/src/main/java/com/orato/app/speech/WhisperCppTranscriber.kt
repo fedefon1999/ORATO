@@ -11,8 +11,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Offline whisper.cpp transcription. Serializes native context access.
- * Does not hold Activity references. Failures become controlled results —
- * never crash the body/audio report path.
+ * Returns an ephemeral [TranscriptionResult] for metrics calculation only —
+ * callers must not persist or expose the transcript in the normal report.
  */
 class WhisperCppTranscriber(
     private val modelManager: WhisperModelManager,
@@ -27,6 +27,7 @@ class WhisperCppTranscriber(
         val modelLoadMs: Long = 0L,
         val preprocessMs: Long = 0L,
         val inferenceMs: Long = 0L,
+        val metricsMs: Long = 0L,
         val totalMs: Long = 0L,
         val threadCount: Int = 0,
         val modelName: String = "",
@@ -85,6 +86,9 @@ class WhisperCppTranscriber(
                     languageCode = languageCode,
                     numThreads = threads,
                     translate = false,
+                    initialPrompt = SpeechConfig.WHISPER_INITIAL_PROMPT,
+                    carryInitialPrompt = SpeechConfig.WHISPER_CARRY_INITIAL_PROMPT,
+                    suppressNst = SpeechConfig.WHISPER_SUPPRESS_NST,
                 )
             } catch (t: Throwable) {
                 logDebug("native transcribe error: ${t.javaClass.simpleName}")
@@ -99,21 +103,19 @@ class WhisperCppTranscriber(
                 throw TranscriptionFailedException(SpeechConfig.USER_SAFE_TRANSCRIPTION_ERROR)
             }
 
+            // Collect segment text only — no UI segments / word timestamps.
             val segmentCount = WhisperNative.getSegmentCount(ptr)
-            val segments = ArrayList<TranscriptSegment>(segmentCount)
             val textBuilder = StringBuilder()
             for (i in 0 until segmentCount) {
                 val text = WhisperNative.getSegmentText(ptr, i).trim()
-                // whisper.cpp timestamps are in centiseconds.
-                val startMs = WhisperNative.getSegmentT0(ptr, i) * 10L
-                val endMs = WhisperNative.getSegmentT1(ptr, i) * 10L
                 if (text.isNotEmpty()) {
-                    segments.add(TranscriptSegment(text = text, startMs = startMs, endMs = endMs))
                     if (textBuilder.isNotEmpty()) textBuilder.append(' ')
                     textBuilder.append(text)
                 }
             }
 
+            val raw = textBuilder.toString()
+            val cleaned = SpeechMetricsCalculator.stripInitialPromptEcho(raw).trim()
             val totalMs = (System.nanoTime() - totalStart) / 1_000_000L
             lastDebugTimings = DebugTimings(
                 modelLoadMs = lastModelLoadMs,
@@ -123,13 +125,12 @@ class WhisperCppTranscriber(
                 threadCount = threads,
                 modelName = WhisperModelSpec.GGML_BASE.fileName,
                 audioDurationMs = prepared.durationMs,
-                transcriptChars = textBuilder.length,
+                transcriptChars = cleaned.length,
             )
 
             TranscriptionResult(
-                transcript = textBuilder.toString().trim(),
+                transcript = cleaned,
                 detectedLanguage = languageCode,
-                segments = segments,
                 processingDurationMs = totalMs,
             )
         }
@@ -152,7 +153,6 @@ class WhisperCppTranscriber(
         }
     }
 
-    /** Permanent shutdown — further [transcribe] calls fail. */
     suspend fun shutdown() {
         if (!released.compareAndSet(false, true)) {
             close()

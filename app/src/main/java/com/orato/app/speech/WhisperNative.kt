@@ -36,6 +36,9 @@ internal object WhisperNative {
         languageCode: String,
         numThreads: Int,
         translate: Boolean,
+        initialPrompt: String,
+        carryInitialPrompt: Boolean,
+        suppressNst: Boolean,
     ): Int
 
     @JvmStatic external fun requestCancellation()

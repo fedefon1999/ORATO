@@ -49,7 +49,10 @@ Java_com_orato_app_speech_WhisperNative_transcribe(
         jfloatArray samples,
         jstring language_code,
         jint num_threads,
-        jboolean translate) {
+        jboolean translate,
+        jstring initial_prompt,
+        jboolean carry_initial_prompt,
+        jboolean suppress_nst) {
     if (context_ptr == 0 || samples == nullptr) {
         return -1;
     }
@@ -74,6 +77,11 @@ Java_com_orato_app_speech_WhisperNative_transcribe(
         }
     }
 
+    const char *prompt_chars = nullptr;
+    if (initial_prompt != nullptr) {
+        prompt_chars = env->GetStringUTFChars(initial_prompt, nullptr);
+    }
+
     int threads = num_threads;
     if (threads < 1) threads = 1;
     if (threads > 8) threads = 8;
@@ -91,15 +99,22 @@ Java_com_orato_app_speech_WhisperNative_transcribe(
     params.no_context = true;
     params.single_segment = false;
     params.suppress_blank = true;
-    params.suppress_nst = true;
+    // suppress_nst=false: keep non-speech / hesitation-like tokens available for Italian fillers.
+    params.suppress_nst = suppress_nst == JNI_TRUE;
     params.temperature = 0.0f;
     params.temperature_inc = 0.0f;
     params.token_timestamps = false;
+    params.initial_prompt = (prompt_chars != nullptr && prompt_chars[0] != '\0')
+            ? prompt_chars
+            : nullptr;
+    params.carry_initial_prompt = carry_initial_prompt == JNI_TRUE;
     params.abort_callback = abort_callback;
     params.abort_callback_user_data = nullptr;
 
     whisper_reset_timings(ctx);
-    LOGI("whisper_full n_samples=%d threads=%d lang=%s", (int) n_samples, threads, lang);
+    LOGI("whisper_full n_samples=%d threads=%d lang=%s suppress_nst=%d carry_prompt=%d",
+         (int) n_samples, threads, lang,
+         (int) params.suppress_nst, (int) params.carry_initial_prompt);
     int rc = whisper_full(ctx, params, audio, n_samples);
     if (rc != 0) {
         LOGW("whisper_full failed rc=%d", rc);
@@ -108,6 +123,9 @@ Java_com_orato_app_speech_WhisperNative_transcribe(
     env->ReleaseFloatArrayElements(samples, audio, JNI_ABORT);
     if (lang_chars != nullptr) {
         env->ReleaseStringUTFChars(language_code, lang_chars);
+    }
+    if (prompt_chars != nullptr) {
+        env->ReleaseStringUTFChars(initial_prompt, prompt_chars);
     }
     if (g_abort_flag.load()) {
         return -100; // cancelled
