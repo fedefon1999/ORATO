@@ -148,9 +148,9 @@ object VoiceReportPresentation {
             LongPauseSummary.DaControllare -> "Da controllare"
         }
 
-    /** Signed dBFS line for the report; never flips the sign. */
+    /** Signed dBFS line for the report; never flips the sign. Italian decimal. */
     fun formatMeanVolumeDbfs(meanSpeechDbfs: Double): String =
-        "Volume medio: %.1f dBFS".format(meanSpeechDbfs)
+        "Volume medio: %.1f dBFS".format(java.util.Locale.ITALY, meanSpeechDbfs)
 
     const val VOLUME_HINT: String = "più vicino a 0 = più forte"
 

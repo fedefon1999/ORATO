@@ -59,6 +59,11 @@ data class AudioSessionMetrics(
     val inputQuality: AudioInputQuality,
     /** Actual successfully captured duration in milliseconds. */
     val capturedDurationMs: Long,
+    /**
+     * Finalized VAD speech duration in milliseconds (qualified speech segments).
+     * Never equal to [capturedDurationMs]; null when insufficient / error.
+     */
+    val speechDurationMs: Long? = null,
     val droppedReadCount: Int,
     val sampleRateHz: Int?,
     val audioSourceLabel: String?,
@@ -106,6 +111,7 @@ data class AudioSessionMetrics(
                 state = AudioRecordingState.Idle,
                 inputQuality = AudioInputQuality.INSUFFICIENT_AUDIO,
                 capturedDurationMs = 0L,
+                speechDurationMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
                 audioSourceLabel = null,
@@ -127,6 +133,7 @@ data class AudioSessionMetrics(
                 state = AudioRecordingState.Error,
                 inputQuality = AudioInputQuality.RECORDING_ERROR,
                 capturedDurationMs = 0L,
+                speechDurationMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
                 audioSourceLabel = null,
@@ -147,8 +154,11 @@ data class AudioSessionMetrics(
 
 /**
  * Combined local practice report handed across navigation.
+ * [speech] may be updated after navigation when transcription finishes late.
  */
 data class SessionPracticeReport(
     val body: com.orato.app.metrics.SessionBodyReport,
     val audio: AudioSessionMetrics,
+    val speech: com.orato.app.speech.SpeechSessionResult =
+        com.orato.app.speech.SpeechSessionResult.NotAttempted,
 )

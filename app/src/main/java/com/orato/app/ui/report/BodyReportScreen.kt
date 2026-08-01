@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -13,7 +14,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -28,6 +34,10 @@ import com.orato.app.metrics.GestureActivityMetric
 import com.orato.app.metrics.PercentMetric
 import com.orato.app.metrics.ScoredMetric
 import com.orato.app.metrics.SessionBodyReport
+import com.orato.app.speech.SpeechConfig
+import com.orato.app.speech.SpeechIntelligenceMetrics
+import com.orato.app.speech.SpeechReportPresentation
+import com.orato.app.speech.SpeechSessionResult
 
 @Composable
 fun BodyReportScreen(
@@ -68,6 +78,10 @@ fun BodyReportScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         VoiceSection(report.audio)
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        SpeechSection(report.speech)
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -122,7 +136,7 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         color = MaterialTheme.colorScheme.onBackground,
     )
     Text(
-        text = "Pause approssimative dall’audio (nessuna trascrizione ancora).",
+        text = "Pause e volume dall’audio locale.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -189,7 +203,6 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
     if (audio.meanSpeechDbfs == null) {
         ReportLine(label = "Volume medio", value = "Dati insufficienti")
     } else {
-        // Signed dBFS (typically negative). Never convert to a positive number.
         ReportLine(
             label = "Volume medio",
             value = VoiceReportPresentation.formatMeanVolumeDbfs(audio.meanSpeechDbfs),
@@ -241,6 +254,72 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         label = "Clipping",
         value = audio.clippingPercent?.let { "%.2f%%".format(it) } ?: "—",
     )
+}
+
+@Composable
+private fun SpeechSection(speech: SpeechSessionResult) {
+    Text(
+        text = "Ritmo e trascrizione",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onBackground,
+    )
+
+    when (speech) {
+        SpeechSessionResult.NotAttempted,
+        is SpeechSessionResult.Unavailable,
+        -> {
+            Text(
+                text = SpeechConfig.METRICS_UNAVAILABLE_REPORT,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        is SpeechSessionResult.Ready -> {
+            SpeechMetricsBlock(speech.metrics)
+        }
+    }
+}
+
+@Composable
+private fun SpeechMetricsBlock(metrics: SpeechIntelligenceMetrics) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
+    ReportLine(
+        label = "Parole",
+        value = SpeechReportPresentation.formatWordCount(metrics.wordCount),
+    )
+    ReportLine(
+        label = "Ritmo",
+        value = SpeechReportPresentation.formatWpm(metrics.wordsPerMinute),
+    )
+    ReportLine(
+        label = "Riempitivi stimati",
+        value = SpeechReportPresentation.formatFillerCount(metrics.fillerCount),
+    )
+    val breakdown = SpeechReportPresentation.formatFillerBreakdown(metrics.fillerBreakdown)
+    if (breakdown.isNotEmpty()) {
+        Text(
+            text = breakdown,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    TextButton(onClick = { expanded = !expanded }) {
+        Text(if (expanded) "Trascrizione: Nascondi" else "Trascrizione: Mostra")
+    }
+    if (expanded) {
+        val transcriptScroll = rememberScrollState()
+        Text(
+            text = metrics.transcript.ifBlank { "—" },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 200.dp)
+                .verticalScroll(transcriptScroll),
+        )
+    }
 }
 
 private fun formatDurationMs(ms: Long): String {

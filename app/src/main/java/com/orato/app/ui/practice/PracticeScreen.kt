@@ -45,6 +45,8 @@ import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.domain.model.Scenario
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
+import com.orato.app.speech.SpeechReportPresentation
+import com.orato.app.speech.TranscriptionState
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -111,6 +113,7 @@ fun PracticeScreen(
                     onRequestMicrophone = { micPermission.launchPermissionRequest() },
                     onStart = viewModel::startSession,
                     onReset = viewModel::resetSession,
+                    onPrepareTranscription = viewModel::prepareTranscription,
                     onPoseFrame = viewModel::onPoseFrame,
                     onPoseStatus = viewModel::onPoseStatus,
                     modifier = Modifier
@@ -193,6 +196,7 @@ private fun PracticeSessionContent(
     onRequestMicrophone: () -> Unit,
     onStart: () -> Unit,
     onReset: () -> Unit,
+    onPrepareTranscription: () -> Unit,
     onPoseFrame: (UpperBodyPoseFrame) -> Unit,
     onPoseStatus: (PoseDetectionStatus) -> Unit,
     modifier: Modifier = Modifier,
@@ -261,6 +265,12 @@ private fun PracticeSessionContent(
             )
         }
 
+        TranscriptionStatusRow(
+            state = uiState.transcriptionState,
+            onPrepare = onPrepareTranscription,
+            sessionRunning = uiState.isRunning || uiState.isFinished,
+        )
+
         Text(
             text = "L’audio viene analizzato durante l’esercizio e salvato temporaneamente " +
                 "sul dispositivo. Non viene ancora caricato online.",
@@ -320,6 +330,34 @@ private fun PracticeSessionContent(
                 ) {
                     Text("Avvia 90 secondi")
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TranscriptionStatusRow(
+    state: TranscriptionState,
+    onPrepare: () -> Unit,
+    sessionRunning: Boolean,
+) {
+    val label = SpeechReportPresentation.statusLabel(state)
+    val showPrepare = SpeechReportPresentation.showPrepareAction(state) && !sessionRunning
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (showPrepare) {
+            TextButton(onClick = onPrepare) {
+                Text("Prepara trascrizione")
             }
         }
     }

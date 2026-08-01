@@ -1,7 +1,9 @@
 package com.orato.app.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -12,6 +14,7 @@ import com.orato.app.audio.PendingSessionReport
 import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.domain.model.Scenario
 import com.orato.app.metrics.SessionBodyReport
+import com.orato.app.speech.SpeechSessionResult
 import com.orato.app.ui.home.HomeScreen
 import com.orato.app.ui.practice.PracticeScreen
 import com.orato.app.ui.report.BodyReportScreen
@@ -72,11 +75,13 @@ fun OratoNavGraph(
         ) { entry ->
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
+            val liveReport by PendingSessionReport.report.collectAsStateWithLifecycle()
             val report: SessionPracticeReport =
-                PendingSessionReport.peek()
+                liveReport
                     ?: SessionPracticeReport(
                         body = SessionBodyReport.emptyInsufficient(),
                         audio = AudioSessionMetrics.idle(),
+                        speech = SpeechSessionResult.NotAttempted,
                     )
 
             BodyReportScreen(
