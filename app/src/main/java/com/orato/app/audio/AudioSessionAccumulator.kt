@@ -93,7 +93,7 @@ class AudioSessionAccumulator(
         qualifiedSpeechSegments().size
 
     fun finalizedInternalPauseCount(): Int =
-        computeInternalPauses(qualifiedSpeechSegments()).count
+        computeInternalPauses(qualifiedSpeechSegments()).buckets.rawCount
 
     fun liveSnapshot(
         state: AudioRecordingState,
@@ -180,6 +180,7 @@ class AudioSessionAccumulator(
                 medianPauseDurationMs = null,
                 longestPauseDurationMs = null,
                 pausesOver1500Ms = null,
+                pauseBuckets = null,
                 errorMessage = errorMessage ?: "Recording error",
                 insufficientData = true,
             )
@@ -242,6 +243,7 @@ class AudioSessionAccumulator(
                 medianPauseDurationMs = null,
                 longestPauseDurationMs = null,
                 pausesOver1500Ms = null,
+                pauseBuckets = null,
                 errorMessage = errorMessage,
                 insufficientData = true,
             )
@@ -258,10 +260,11 @@ class AudioSessionAccumulator(
             meanSpeechDbfs = meanSpeech,
             volumeVariationStdDevDb = variation,
             clippingPercent = clippingPct,
-            approximatePauseCount = pauses.count,
+            approximatePauseCount = pauses.buckets.rawCount,
             medianPauseDurationMs = pauses.medianMs,
             longestPauseDurationMs = pauses.longestMs,
-            pausesOver1500Ms = pauses.over1500,
+            pausesOver1500Ms = pauses.buckets.longCount,
+            pauseBuckets = pauses.buckets,
             errorMessage = errorMessage,
             insufficientData = false,
         )
@@ -315,20 +318,24 @@ class AudioSessionAccumulator(
         }
 
     private data class PauseStats(
-        val count: Int,
+        val buckets: PauseBuckets,
         val medianMs: Long?,
         val longestMs: Long?,
-        val over1500: Int,
     )
 
     /**
      * Internal pauses = silence between consecutive qualified speech segments.
      * Leading silence (before first speech) and trailing silence (after last)
-     * are excluded by construction.
+     * are excluded by construction. All raw durations ≥ min silence are kept
+     * for debugging and then bucketed for the user-facing report.
      */
     private fun computeInternalPauses(speechSegments: List<AudioSegment>): PauseStats {
         if (speechSegments.size < 2) {
-            return PauseStats(count = 0, medianMs = null, longestMs = null, over1500 = 0)
+            return PauseStats(
+                buckets = PauseBuckets.empty(),
+                medianMs = null,
+                longestMs = null,
+            )
         }
         val durations = mutableListOf<Long>()
         for (idx in 0 until speechSegments.size - 1) {
@@ -337,14 +344,18 @@ class AudioSessionAccumulator(
                 durations.add(gapMs)
             }
         }
-        if (durations.isEmpty()) {
-            return PauseStats(count = 0, medianMs = null, longestMs = null, over1500 = 0)
+        val buckets = PauseBuckets.fromDurations(durations)
+        if (buckets.rawPauseDurationsMs.isEmpty()) {
+            return PauseStats(
+                buckets = buckets,
+                medianMs = null,
+                longestMs = null,
+            )
         }
         return PauseStats(
-            count = durations.size,
-            medianMs = PcmMath.medianLong(durations),
-            longestMs = durations.maxOrNull(),
-            over1500 = durations.count { it > config.LONG_PAUSE_THRESHOLD_MS },
+            buckets = buckets,
+            medianMs = PcmMath.medianLong(buckets.rawPauseDurationsMs),
+            longestMs = buckets.rawPauseDurationsMs.maxOrNull(),
         )
     }
 

@@ -422,6 +422,10 @@ class AudioSessionAccumulatorTest {
         assertNotNull(metrics.longestPauseDurationMs)
         assertTrue(metrics.longestPauseDurationMs!! in 1_500..2_500)
         assertTrue(metrics.pausesOver1500Ms!! >= 1)
+        assertNotNull(metrics.pauseBuckets)
+        assertEquals(1, metrics.pauseBuckets!!.significantCount)
+        assertEquals(1, metrics.pauseBuckets!!.longCount)
+        assertEquals(0, metrics.pauseBuckets!!.briefCount)
         assertNotNull(metrics.meanSpeechDbfs)
         assertTrue(metrics.meanSpeechDbfs!! < 0.0)
         assertTrue(metrics.meanSpeechDbfs!!.isFinite())
@@ -449,6 +453,10 @@ class AudioSessionAccumulatorTest {
         assertNotNull(metrics.longestPauseDurationMs)
         assertTrue(metrics.longestPauseDurationMs!! >= 2_500)
         assertEquals(2, metrics.pausesOver1500Ms)
+        assertNotNull(metrics.pauseBuckets)
+        assertEquals(2, metrics.pauseBuckets!!.longCount)
+        assertEquals(2, metrics.pauseBuckets!!.significantCount)
+        assertEquals(0, metrics.pauseBuckets!!.briefCount)
         // Median of ~2s and ~3s ≈ 2.5s
         assertTrue(metrics.medianPauseDurationMs!! in 1_800..3_200)
     }
@@ -798,7 +806,166 @@ class AudioMetricsConfigTest {
         assertTrue(AudioMetricsConfig.SPEECH_RELEASE_FRAMES >= 1)
         assertTrue(AudioMetricsConfig.MIN_SPEECH_SEGMENT_MS > 0)
         assertEquals(200, AudioMetricsConfig.MIN_SILENCE_SEGMENT_MS)
+        assertEquals(500, AudioMetricsConfig.SIGNIFICANT_PAUSE_MIN_MS)
         assertEquals(1_500, AudioMetricsConfig.LONG_PAUSE_THRESHOLD_MS)
         assertEquals("orato_sessions", AudioMetricsConfig.CACHE_SUBDIR)
+    }
+}
+
+class PauseBucketsTest {
+
+    @Test
+    fun classify_briefMediumLongBoundaries() {
+        assertEquals(PauseBucket.Brief, PauseBuckets.classify(200))
+        assertEquals(PauseBucket.Brief, PauseBuckets.classify(499))
+        assertEquals(PauseBucket.Medium, PauseBuckets.classify(500))
+        assertEquals(PauseBucket.Medium, PauseBuckets.classify(1_499))
+        assertEquals(PauseBucket.Long, PauseBuckets.classify(1_500))
+        assertEquals(PauseBucket.Long, PauseBuckets.classify(3_000))
+    }
+
+    @Test
+    fun fromDurations_keepsRawAndBucketsCounts() {
+        val buckets = PauseBuckets.fromDurations(
+            listOf(150L, 250L, 400L, 800L, 1_200L, 1_500L, 2_500L),
+        )
+        // 150 ms below min silence → dropped from raw
+        assertEquals(listOf(250L, 400L, 800L, 1_200L, 1_500L, 2_500L), buckets.rawPauseDurationsMs)
+        assertEquals(2, buckets.briefCount) // 250, 400
+        assertEquals(2, buckets.mediumCount) // 800, 1200
+        assertEquals(2, buckets.longCount) // 1500, 2500
+        assertEquals(4, buckets.significantCount) // medium + long
+        assertEquals(6, buckets.rawCount)
+    }
+
+    @Test
+    fun fromDurations_emptyWhenOnlySubMinimumGaps() {
+        val buckets = PauseBuckets.fromDurations(listOf(50L, 199L))
+        assertTrue(buckets.rawPauseDurationsMs.isEmpty())
+        assertEquals(0, buckets.significantCount)
+        assertEquals(0, buckets.longCount)
+    }
+}
+
+class VoiceReportPresentationTest {
+
+    private fun metrics(
+        quality: AudioInputQuality = AudioInputQuality.GOOD,
+        insufficient: Boolean = false,
+        meanDbfs: Double? = -24.5,
+        buckets: PauseBuckets? = PauseBuckets.empty(),
+        longCount: Int? = buckets?.longCount,
+    ): AudioSessionMetrics =
+        AudioSessionMetrics(
+            state = AudioRecordingState.Completed,
+            inputQuality = quality,
+            capturedDurationMs = 90_000,
+            droppedReadCount = 0,
+            sampleRateHz = 16_000,
+            audioSourceLabel = "MIC",
+            speechRatioPercent = 55.0,
+            meanSpeechDbfs = meanDbfs,
+            volumeVariationStdDevDb = 3.0,
+            clippingPercent = 0.1,
+            approximatePauseCount = buckets?.rawCount,
+            medianPauseDurationMs = 600L,
+            longestPauseDurationMs = 2_000L,
+            pausesOver1500Ms = longCount,
+            pauseBuckets = buckets,
+            errorMessage = null,
+            insufficientData = insufficient,
+        )
+
+    @Test
+    fun formatMeanVolumeDbfs_keepsNegativeSign() {
+        val text = VoiceReportPresentation.formatMeanVolumeDbfs(-24.5)
+        assertEquals("Volume medio: -24.5 dBFS", text)
+        assertTrue(text.contains("-24.5"))
+        assertFalse(text.contains("Volume medio: +"))
+        assertFalse(text.contains("Volume medio: 24.5"))
+    }
+
+    @Test
+    fun formatMeanVolumeDbfs_neverNaNOrInfinity() {
+        val finite = VoiceReportPresentation.formatMeanVolumeDbfs(-18.0)
+        assertTrue(finite.contains("dBFS"))
+        assertFalse(finite.contains("NaN", ignoreCase = true))
+        assertFalse(finite.contains("Infinity", ignoreCase = true))
+    }
+
+    @Test
+    fun acquisitionSummary_mapsQuality() {
+        assertEquals(
+            AcquisitionSummary.Ottima,
+            VoiceReportPresentation.acquisitionSummary(metrics(AudioInputQuality.GOOD)),
+        )
+        assertEquals(
+            AcquisitionSummary.Sufficiente,
+            VoiceReportPresentation.acquisitionSummary(metrics(AudioInputQuality.TOO_QUIET)),
+        )
+        assertEquals(
+            AcquisitionSummary.Sufficiente,
+            VoiceReportPresentation.acquisitionSummary(metrics(AudioInputQuality.CLIPPING)),
+        )
+        assertEquals(
+            AcquisitionSummary.Problematica,
+            VoiceReportPresentation.acquisitionSummary(
+                metrics(AudioInputQuality.INSUFFICIENT_AUDIO, insufficient = true, meanDbfs = null, buckets = null),
+            ),
+        )
+    }
+
+    @Test
+    fun volumeSummary_mapsQuality() {
+        assertEquals(
+            VolumeSummary.Buono,
+            VoiceReportPresentation.volumeSummary(metrics(AudioInputQuality.GOOD)),
+        )
+        assertEquals(
+            VolumeSummary.TroppoBasso,
+            VoiceReportPresentation.volumeSummary(metrics(AudioInputQuality.TOO_QUIET)),
+        )
+        assertEquals(
+            VolumeSummary.Clipping,
+            VoiceReportPresentation.volumeSummary(metrics(AudioInputQuality.CLIPPING)),
+        )
+    }
+
+    @Test
+    fun longPauseSummary_benGestiteWhenNone() {
+        val none = PauseBuckets.fromDurations(listOf(300L, 800L))
+        assertEquals(
+            LongPauseSummary.BenGestite,
+            VoiceReportPresentation.longPauseSummary(metrics(buckets = none)),
+        )
+        assertEquals(
+            "Ben gestite",
+            VoiceReportPresentation.longPauseLabel(LongPauseSummary.BenGestite),
+        )
+    }
+
+    @Test
+    fun longPauseSummary_daControllareWhenPresent() {
+        val withLong = PauseBuckets.fromDurations(listOf(300L, 1_800L))
+        assertEquals(
+            LongPauseSummary.DaControllare,
+            VoiceReportPresentation.longPauseSummary(metrics(buckets = withLong)),
+        )
+        assertEquals(
+            "Da controllare",
+            VoiceReportPresentation.longPauseLabel(LongPauseSummary.DaControllare),
+        )
+    }
+
+    @Test
+    fun reportLabels_areItalian() {
+        assertEquals("Ottima", VoiceReportPresentation.acquisitionLabel(AcquisitionSummary.Ottima))
+        assertEquals("Sufficiente", VoiceReportPresentation.acquisitionLabel(AcquisitionSummary.Sufficiente))
+        assertEquals("Problematica", VoiceReportPresentation.acquisitionLabel(AcquisitionSummary.Problematica))
+        assertEquals("Buono", VoiceReportPresentation.volumeLabel(VolumeSummary.Buono))
+        assertEquals("Troppo basso", VoiceReportPresentation.volumeLabel(VolumeSummary.TroppoBasso))
+        assertEquals("Clipping", VoiceReportPresentation.volumeLabel(VolumeSummary.Clipping))
+        assertTrue(VoiceReportPresentation.PAUSE_INTERPRETATION.contains("articolazione"))
+        assertEquals("più vicino a 0 = più forte", VoiceReportPresentation.VOLUME_HINT)
     }
 }

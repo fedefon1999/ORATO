@@ -132,11 +132,21 @@ object AudioMetricsConfig {
 
     /**
      * Internal silence gaps shorter than this (ms) between speech segments are
-     * not counted as approximate pauses.
+     * not counted as raw approximate pauses (debug + bucketing input).
      */
     const val MIN_SILENCE_SEGMENT_MS: Int = 200
 
-    /** Pauses longer than this (ms) are reported in the “over 1.5 s” counter. */
+    /**
+     * User-facing “pause significative” floor (ms).
+     * Brief pauses are [[MIN_SILENCE_SEGMENT_MS], [SIGNIFICANT_PAUSE_MIN_MS]).
+     * Medium pauses are [[SIGNIFICANT_PAUSE_MIN_MS], [LONG_PAUSE_THRESHOLD_MS]).
+     */
+    const val SIGNIFICANT_PAUSE_MIN_MS: Int = 500
+
+    /**
+     * Long-pause threshold (ms). Pauses ≥ this value are “pause lunghe”.
+     * (VAD detection thresholds are unchanged; this is report bucketing only.)
+     */
     const val LONG_PAUSE_THRESHOLD_MS: Int = 1_500
 
     // -------------------------------------------------------------------------

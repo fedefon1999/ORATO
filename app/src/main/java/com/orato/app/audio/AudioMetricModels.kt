@@ -52,7 +52,7 @@ data class LiveAudioDebug(
 
 /**
  * Immutable end-of-session audio metrics.
- * Raw measurements stay separate from any future user-facing interpretation.
+ * Raw measurements stay separate from user-facing interpretation.
  */
 data class AudioSessionMetrics(
     val state: AudioRecordingState,
@@ -79,11 +79,20 @@ data class AudioSessionMetrics(
     val volumeVariationStdDevDb: Double?,
     /** Clipped sample percentage over all captured PCM samples (0–100). */
     val clippingPercent: Double?,
-    /** Approximate internal pauses between speech segments (leading/trailing excluded). */
+    /**
+     * Raw count of internal pauses ≥ min silence (debug / compatibility).
+     * Not presented as a coaching “score” in the user-facing report.
+     */
     val approximatePauseCount: Int?,
     val medianPauseDurationMs: Long?,
     val longestPauseDurationMs: Long?,
+    /** Count of pauses ≥ [AudioMetricsConfig.LONG_PAUSE_THRESHOLD_MS]. */
     val pausesOver1500Ms: Int?,
+    /**
+     * Bucketed pause stats including the full raw duration list for debugging.
+     * Null when audio data are insufficient.
+     */
+    val pauseBuckets: PauseBuckets?,
     val errorMessage: String?,
     /**
      * True when valid audio is insufficient for presenting metrics.
@@ -108,6 +117,7 @@ data class AudioSessionMetrics(
                 medianPauseDurationMs = null,
                 longestPauseDurationMs = null,
                 pausesOver1500Ms = null,
+                pauseBuckets = null,
                 errorMessage = null,
                 insufficientData = true,
             )
@@ -128,6 +138,7 @@ data class AudioSessionMetrics(
                 medianPauseDurationMs = null,
                 longestPauseDurationMs = null,
                 pausesOver1500Ms = null,
+                pauseBuckets = null,
                 errorMessage = message,
                 insufficientData = true,
             )

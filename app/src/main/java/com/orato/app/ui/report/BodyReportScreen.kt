@@ -19,7 +19,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.orato.app.audio.AudioInputQuality
 import com.orato.app.audio.AudioSessionMetrics
+import com.orato.app.audio.PauseBuckets
 import com.orato.app.audio.SessionPracticeReport
+import com.orato.app.audio.VoiceReportPresentation
 import com.orato.app.domain.model.Scenario
 import com.orato.app.metrics.GestureActivityClass
 import com.orato.app.metrics.GestureActivityMetric
@@ -148,6 +150,34 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         return
     }
 
+    val buckets = audio.pauseBuckets ?: PauseBuckets.empty()
+
+    Text(
+        text = "Sintesi",
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onBackground,
+    )
+    ReportLine(
+        label = "Acquisizione",
+        value = VoiceReportPresentation.acquisitionLabel(
+            VoiceReportPresentation.acquisitionSummary(audio),
+        ),
+    )
+    ReportLine(
+        label = "Volume",
+        value = VoiceReportPresentation.volumeLabel(
+            VoiceReportPresentation.volumeSummary(audio),
+        ),
+    )
+    ReportLine(
+        label = "Pause lunghe",
+        value = VoiceReportPresentation.longPauseLabel(
+            VoiceReportPresentation.longPauseSummary(audio),
+        ),
+    )
+
+    Spacer(modifier = Modifier.height(4.dp))
+
     ReportLine(
         label = "Durata catturata",
         value = formatDurationMs(audio.capturedDurationMs),
@@ -162,10 +192,10 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         // Signed dBFS (typically negative). Never convert to a positive number.
         ReportLine(
             label = "Volume medio",
-            value = "Volume medio: %.1f dBFS".format(audio.meanSpeechDbfs),
+            value = VoiceReportPresentation.formatMeanVolumeDbfs(audio.meanSpeechDbfs),
         )
         Text(
-            text = "più vicino a 0 = più forte",
+            text = VoiceReportPresentation.VOLUME_HINT,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -174,9 +204,30 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         label = "Variazione di volume",
         value = audio.volumeVariationStdDevDb?.let { "%.2f dB σ".format(it) } ?: "—",
     )
+
+    Spacer(modifier = Modifier.height(4.dp))
+
+    Text(
+        text = "Pause",
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onBackground,
+    )
+    Text(
+        text = VoiceReportPresentation.PAUSE_INTERPRETATION,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
     ReportLine(
-        label = "Pause approssimative",
-        value = audio.approximatePauseCount?.toString() ?: "—",
+        label = "Pause brevi",
+        value = buckets.briefCount.toString(),
+    )
+    ReportLine(
+        label = "Pause significative",
+        value = buckets.significantCount.toString(),
+    )
+    ReportLine(
+        label = "Pause lunghe",
+        value = buckets.longCount.toString(),
     )
     ReportLine(
         label = "Durata mediana pausa",
@@ -187,16 +238,8 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         value = audio.longestPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
     )
     ReportLine(
-        label = "Pause oltre 1,5 s",
-        value = audio.pausesOver1500Ms?.toString() ?: "—",
-    )
-    ReportLine(
         label = "Clipping",
         value = audio.clippingPercent?.let { "%.2f%%".format(it) } ?: "—",
-    )
-    ReportLine(
-        label = "Qualità ingresso",
-        value = inputQualityLabel(audio.inputQuality),
     )
 }
 
