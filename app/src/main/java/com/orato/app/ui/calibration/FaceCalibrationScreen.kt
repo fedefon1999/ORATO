@@ -64,7 +64,9 @@ fun FaceCalibrationScreen(
             FaceCalibrationProgress(
                 uiState = FaceCalibrationUiState.POSITION_FACE,
                 acceptedSamples = 0,
-                requiredSamples = com.orato.app.face.FaceMetricsConfig.CALIBRATION_REQUIRED_ACCEPTED_SAMPLES,
+                requiredSamples = com.orato.app.face.FaceMetricsConfig.CALIBRATION_MIN_ACCEPTED_SAMPLES,
+                validContinuousDurationMs = 0L,
+                requiredDurationMs = com.orato.app.face.FaceMetricsConfig.MIN_VALID_CALIBRATION_DURATION_MS,
                 faceValid = false,
                 irisValid = false,
                 shouldersValid = if (requireUpperTorso) false else null,
@@ -192,7 +194,8 @@ fun FaceCalibrationScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(
-                text = "${progress.acceptedSamples} / ${progress.requiredSamples} campioni stabili",
+                text = "${progress.acceptedSamples} / ${progress.requiredSamples} campioni · " +
+                    "${progress.validContinuousDurationMs} / ${progress.requiredDurationMs} ms validi",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth(),

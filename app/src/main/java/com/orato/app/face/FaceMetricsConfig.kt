@@ -16,22 +16,33 @@ object FaceMetricsConfig {
     const val MAX_ABS_PITCH_FOR_IRIS_DEG = 20f
     const val MAX_ABS_ROLL_FOR_IRIS_DEG = 20f
 
-    // Calibration
-    const val CALIBRATION_REQUIRED_ACCEPTED_SAMPLES = 18
+    // Calibration — continuous valid window, not sample-count alone
+    const val MIN_VALID_CALIBRATION_DURATION_MS = 3_000L
+    const val MAX_INVALID_CALIBRATION_GAP_MS = 150L
+    const val MAX_TRACKING_LOSS_BEFORE_RESET_MS = 300L
+    const val CALIBRATION_MIN_ACCEPTED_SAMPLES = 10
     const val CALIBRATION_MAX_YAW_SPREAD_DEG = 8f
     const val CALIBRATION_MAX_PITCH_SPREAD_DEG = 8f
     const val CALIBRATION_MAX_ROLL_SPREAD_DEG = 8f
     const val CALIBRATION_TRIM_FRACTION = 0.15f
 
+    /** @deprecated Prefer [CALIBRATION_MIN_ACCEPTED_SAMPLES] with duration gate. */
+    const val CALIBRATION_REQUIRED_ACCEPTED_SAMPLES = CALIBRATION_MIN_ACCEPTED_SAMPLES
+
     // Interview upper-body (pose) gates during calibration
     const val INTERVIEW_MIN_SHOULDER_VISIBILITY = 0.45f
+    const val UPPER_BODY_EVIDENCE_MAX_AGE_MS = 300L
 
-    // Gaze
+    // Gaze — independent horizontal / vertical iris thresholds
     const val GAZE_MAX_REL_YAW_DEG = 12f
     const val GAZE_MAX_REL_PITCH_DEG = 10f
     const val GAZE_MAX_REL_ROLL_DEG = 12f
-    const val GAZE_MAX_IRIS_HORIZONTAL_DELTA = 0.12f
-    const val GAZE_MAX_IRIS_VERTICAL_DELTA = 0.12f
+    const val MAX_HORIZONTAL_IRIS_DELTA = 0.12f
+    const val MAX_VERTICAL_IRIS_DELTA = 0.12f
+    /** @deprecated Use [MAX_HORIZONTAL_IRIS_DELTA]. */
+    const val GAZE_MAX_IRIS_HORIZONTAL_DELTA = MAX_HORIZONTAL_IRIS_DELTA
+    /** @deprecated Use [MAX_VERTICAL_IRIS_DELTA]. */
+    const val GAZE_MAX_IRIS_VERTICAL_DELTA = MAX_VERTICAL_IRIS_DELTA
     const val GAZE_ENTER_TOWARD_MS = 250L
     const val GAZE_ENTER_AWAY_MS = 300L
     const val GAZE_INVALID_BRIDGE_MS = 150L
@@ -57,4 +68,9 @@ object FaceMetricsConfig {
     // Analysis throttling (timestamp-based; not tied to assumed FPS)
     const val FACE_MIN_INTERVAL_MS = 80L // ~12.5 Hz target band 10–15
     const val POSE_MIN_INTERVAL_MS = 100L // ~10 Hz target band 8–12
+
+    // Iris geometry
+    const val MIN_EYE_WIDTH = 1e-4f
+    const val MIN_EYE_HEIGHT = 1e-4f
+    const val IRIS_PLAUSIBLE_ABS_MAX = 1.15f
 }
