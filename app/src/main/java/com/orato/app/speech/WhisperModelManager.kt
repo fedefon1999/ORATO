@@ -17,6 +17,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
+/** Minimal readiness surface used by report preparation (allows JVM test fakes). */
+fun interface WhisperModelReadiness {
+    fun isReady(): Boolean
+}
+
 /**
  * Downloads / verifies / removes the offline Whisper model in app-private storage.
  * HTTPS only; renames from .part only after SHA-1 validation.
@@ -24,7 +29,7 @@ import kotlin.coroutines.coroutineContext
 class WhisperModelManager(
     context: Context,
     private val spec: WhisperModelSpec = WhisperModelSpec.GGML_BASE,
-) {
+) : WhisperModelReadiness {
     private val appContext = context.applicationContext
     private val modelsDir = File(appContext.filesDir, SpeechConfig.MODEL_DIR_RELATIVE)
     private val modelFile = File(modelsDir, spec.fileName)
@@ -37,7 +42,7 @@ class WhisperModelManager(
 
     fun modelPath(): File = modelFile
 
-    fun isReady(): Boolean = _state.value is WhisperModelState.Ready && modelFile.isFile
+    override fun isReady(): Boolean = _state.value is WhisperModelState.Ready && modelFile.isFile
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
         _state.value = WhisperModelState.Checking
