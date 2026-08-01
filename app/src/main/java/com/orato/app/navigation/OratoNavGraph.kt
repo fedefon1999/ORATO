@@ -69,6 +69,10 @@ fun OratoNavGraph(
         ) { entry ->
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
+            if (scenario == null) {
+                RedirectUnknownScenario(navController)
+                return@composable
+            }
             FaceCalibrationScreen(
                 scenario = scenario,
                 onCalibrationComplete = {
@@ -92,6 +96,10 @@ fun OratoNavGraph(
         ) { entry ->
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
+            if (scenario == null) {
+                RedirectUnknownScenario(navController)
+                return@composable
+            }
             PracticeScreen(
                 scenario = scenario,
                 onExit = {
@@ -118,6 +126,10 @@ fun OratoNavGraph(
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val sessionId = entry.arguments?.getString("sessionId").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
+            if (scenario == null) {
+                RedirectUnknownScenario(navController)
+                return@composable
+            }
 
             ReportPreparationScreen(
                 sessionId = sessionId,
@@ -130,7 +142,7 @@ fun OratoNavGraph(
                 onCancelled = {
                     reportPrep.clear()
                     PendingCompletedReport.clear()
-                    navController.popBackStack(OratoRoutes.practice(scenarioArg), inclusive = false)
+                    navController.popBackStack(OratoRoutes.practice(scenario.routeArg), inclusive = false)
                 },
                 onFailedHome = {
                     reportPrep.clear()
@@ -151,6 +163,10 @@ fun OratoNavGraph(
         ) { entry ->
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
+            if (scenario == null) {
+                RedirectUnknownScenario(navController)
+                return@composable
+            }
             val liveReport by PendingCompletedReport.report.collectAsStateWithLifecycle()
             val report = liveReport
 
@@ -186,6 +202,20 @@ fun OratoNavGraph(
                     },
                 )
             }
+        }
+    }
+}
+
+/**
+ * Unknown or removed scenario route args never start a session.
+ * Returns the user to scenario selection without crashing.
+ */
+@Composable
+private fun RedirectUnknownScenario(navController: NavHostController) {
+    LaunchedEffect(Unit) {
+        navController.navigate(OratoRoutes.destinationForUnknownScenario()) {
+            popUpTo(OratoRoutes.HOME) { inclusive = false }
+            launchSingleTop = true
         }
     }
 }

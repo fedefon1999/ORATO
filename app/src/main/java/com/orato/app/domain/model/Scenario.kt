@@ -30,10 +30,12 @@ enum class Scenario(val routeArg: String, val displayName: String, val descripti
 
     companion object {
         /**
-         * Resolves a route argument. Unknown or legacy values (including removed
-         * `interview`) fall back to [PRESENTATION] and are not selectable.
+         * Resolves a known practice [routeArg].
+         *
+         * Unknown or removed route arguments return null. Callers must not start a
+         * practice session and should navigate back to scenario selection.
          */
-        fun fromRouteArg(arg: String): Scenario =
-            entries.firstOrNull { it.routeArg == arg } ?: PRESENTATION
+        fun fromRouteArg(arg: String): Scenario? =
+            entries.firstOrNull { it.routeArg == arg }
     }
 }

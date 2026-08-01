@@ -2,6 +2,7 @@ package com.orato.app.domain.model
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -105,8 +106,8 @@ class VisualAnalysisMappingTest {
     }
 
     @Test
-    fun legacyInterviewRoute_fallsBackToPresentation_andIsNotSelectable() {
-        assertEquals(Scenario.PRESENTATION, Scenario.fromRouteArg("interview"))
+    fun removedInterviewRoute_resolvesToNull_notPresentation() {
+        assertNull(Scenario.fromRouteArg("interview"))
         assertTrue(Scenario.entries.none { it.routeArg == "interview" })
     }
 }

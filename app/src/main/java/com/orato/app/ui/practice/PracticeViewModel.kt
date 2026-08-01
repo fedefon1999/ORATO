@@ -161,11 +161,11 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /** @deprecated Prefer [bindScenario]. */
+    /** @deprecated Prefer [bindScenario]. Unknown route args are ignored (no session start). */
     fun bindScenario(routeArg: String, displayName: String) {
-        activeScenarioRouteArg = routeArg
+        val scenario = Scenario.fromRouteArg(routeArg) ?: return
+        activeScenarioRouteArg = scenario.routeArg
         activeScenarioDisplayName = displayName
-        val scenario = Scenario.fromRouteArg(routeArg)
         bindScenario(scenario)
     }
 

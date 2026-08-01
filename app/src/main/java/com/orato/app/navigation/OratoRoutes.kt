@@ -21,4 +21,10 @@ object OratoRoutes {
     fun finalReport(scenarioArg: String): String = "final_report/$scenarioArg"
 
     fun bodyReport(scenarioArg: String): String = "body_report/$scenarioArg"
+
+    /**
+     * Safe recovery destination when a route carries an unknown/removed scenario arg.
+     * Does not start a practice session.
+     */
+    fun destinationForUnknownScenario(): String = SCENARIO_SELECTION
 }
