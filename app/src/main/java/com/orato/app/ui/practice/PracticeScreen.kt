@@ -46,7 +46,7 @@ import com.orato.app.domain.model.Scenario
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
 import com.orato.app.speech.SpeechReportPresentation
-import com.orato.app.speech.TranscriptionState
+import com.orato.app.speech.WhisperModelState
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -81,7 +81,6 @@ fun PracticeScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            // Leaving the practice screen — stop capture exactly once.
             viewModel.onLeaveForeground()
         }
     }
@@ -113,7 +112,9 @@ fun PracticeScreen(
                     onRequestMicrophone = { micPermission.launchPermissionRequest() },
                     onStart = viewModel::startSession,
                     onReset = viewModel::resetSession,
-                    onPrepareTranscription = viewModel::prepareTranscription,
+                    onDownloadModel = viewModel::downloadWhisperModel,
+                    onCancelDownload = viewModel::cancelWhisperModelDownload,
+                    onRemoveModel = viewModel::removeWhisperModel,
                     onPoseFrame = viewModel::onPoseFrame,
                     onPoseStatus = viewModel::onPoseStatus,
                     modifier = Modifier
@@ -196,7 +197,9 @@ private fun PracticeSessionContent(
     onRequestMicrophone: () -> Unit,
     onStart: () -> Unit,
     onReset: () -> Unit,
-    onPrepareTranscription: () -> Unit,
+    onDownloadModel: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onRemoveModel: () -> Unit,
     onPoseFrame: (UpperBodyPoseFrame) -> Unit,
     onPoseStatus: (PoseDetectionStatus) -> Unit,
     modifier: Modifier = Modifier,
@@ -265,15 +268,17 @@ private fun PracticeSessionContent(
             )
         }
 
-        TranscriptionStatusRow(
-            state = uiState.transcriptionState,
-            onPrepare = onPrepareTranscription,
+        WhisperModelStatusRow(
+            state = uiState.whisperModelState,
             sessionRunning = uiState.isRunning || uiState.isFinished,
+            onDownload = onDownloadModel,
+            onCancelDownload = onCancelDownload,
+            onRemove = onRemoveModel,
         )
 
         Text(
             text = "L’audio viene analizzato durante l’esercizio e salvato temporaneamente " +
-                "sul dispositivo. Non viene ancora caricato online.",
+                "sul dispositivo. La trascrizione offline avviene dopo la sessione, se il modello è pronto.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -336,14 +341,14 @@ private fun PracticeSessionContent(
 }
 
 @Composable
-private fun TranscriptionStatusRow(
-    state: TranscriptionState,
-    onPrepare: () -> Unit,
+private fun WhisperModelStatusRow(
+    state: WhisperModelState,
     sessionRunning: Boolean,
+    onDownload: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onRemove: () -> Unit,
 ) {
-    val label = SpeechReportPresentation.statusLabel(state)
-    val showPrepare = SpeechReportPresentation.showPrepareAction(state) && !sessionRunning
-
+    val label = SpeechReportPresentation.modelStatusLabel(state)
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -355,9 +360,23 @@ private fun TranscriptionStatusRow(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
-        if (showPrepare) {
-            TextButton(onClick = onPrepare) {
-                Text("Prepara trascrizione")
+        if (!sessionRunning) {
+            when {
+                SpeechReportPresentation.showDownloadAction(state) -> {
+                    TextButton(onClick = onDownload) {
+                        Text("Scarica modello")
+                    }
+                }
+                state is WhisperModelState.Downloading -> {
+                    TextButton(onClick = onCancelDownload) {
+                        Text("Annulla download")
+                    }
+                }
+                SpeechReportPresentation.showRemoveAction(state) -> {
+                    TextButton(onClick = onRemove) {
+                        Text("Rimuovi modello")
+                    }
+                }
             }
         }
     }

@@ -26,7 +26,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import com.orato.app.speech.PcmFrameSink
 
 /**
  * Session-scoped microphone capture using [AudioRecord] (not MediaRecorder).
@@ -36,7 +35,7 @@ import com.orato.app.speech.PcmFrameSink
  * - All reads run off the main thread.
  * - At most one [AudioRecord] instance; shutdown is idempotent.
  * - Writes `cacheDir/orato_sessions/{sessionId}.wav` (path never shown in UI).
- * - Optional [PcmFrameSink] receives a copy of each PCM chunk for STT (never blocks capture).
+ * - Completed WAV is kept for optional post-session offline transcription.
  */
 class AudioRecorder(
     private val appContext: Context,
@@ -58,9 +57,6 @@ class AudioRecorder(
     private var audioSourceLabel: String? = null
     private var keepFileOnStop: Boolean = false
 
-    @Volatile
-    private var pcmSink: PcmFrameSink? = null
-
     private val _state = MutableStateFlow(AudioRecordingState.Idle)
     val state: StateFlow<AudioRecordingState> = _state.asStateFlow()
 
@@ -71,15 +67,17 @@ class AudioRecorder(
     val metrics: StateFlow<AudioSessionMetrics> = _metrics.asStateFlow()
 
     /**
-     * Optional non-blocking PCM consumer for on-device transcription.
-     * Cleared automatically on stop/reset. Must not block the capture loop.
+     * Path of the completed session WAV when [AudioRecordingState.Completed], else null.
+     * Used for post-session offline transcription — never shown in the UI.
      */
-    fun setPcmSink(sink: PcmFrameSink?) {
-        pcmSink = sink
+    fun completedWavFile(): File? {
+        val file = outputFile
+        return if (_state.value == AudioRecordingState.Completed && file != null && file.isFile) {
+            file
+        } else {
+            null
+        }
     }
-
-    /** Actual sample rate once recording has started; 0 before that. */
-    fun currentSampleRateHz(): Int = sampleRateHz
 
     /**
      * Starts capture for a new practice session.
@@ -187,7 +185,6 @@ class AudioRecorder(
             audioSourceLabel = null
             analyzer = null
             accumulator = null
-            pcmSink = null
             _metrics.value = AudioSessionMetrics.idle()
             _state.value = AudioRecordingState.Idle
             _liveDebug.value = LiveAudioDebug()
@@ -282,13 +279,6 @@ class AudioRecorder(
                             return@withContext
                         }
 
-                        // Copy to STT bridge (bounded / non-blocking). Never fails the session.
-                        try {
-                            pcmSink?.onPcmFrame(readBuffer, 0, read)
-                        } catch (_: Throwable) {
-                            // Transcription must never invalidate capture.
-                        }
-
                         // Feed analyzer in fixed-size frames.
                         var offset = 0
                         // Drain pending + new data into frames.
@@ -378,8 +368,6 @@ class AudioRecorder(
     }
 
     private suspend fun finalizeAndPublish(completed: Boolean, errorMessage: String?) {
-        // Detach STT sink before releasing the recorder so no further frames are offered.
-        pcmSink = null
         try {
             audioRecord?.run {
                 try {

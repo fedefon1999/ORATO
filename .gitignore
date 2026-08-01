@@ -27,3 +27,12 @@ secrets.properties
 # Operating systems
 .DS_Store
 Thumbs.db
+
+# Whisper offline models (runtime downloads only)
+app/src/main/assets/models/
+**/filesDir_whisper_models/
+*.ggml
+ggml-*.bin
+
+# Local Android NDK / toolchains (not part of the repo)
+.tools/
