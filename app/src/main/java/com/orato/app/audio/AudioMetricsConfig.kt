@@ -137,11 +137,18 @@ object AudioMetricsConfig {
     const val MIN_SILENCE_SEGMENT_MS: Int = 200
 
     /**
-     * User-facing “pause significative” floor (ms).
-     * Brief pauses are [[MIN_SILENCE_SEGMENT_MS], [SIGNIFICANT_PAUSE_MIN_MS]).
+     * User-facing “pause significative” / medium-pause floor (ms).
+     * Brief natural gaps are [[MIN_SILENCE_SEGMENT_MS], [SIGNIFICANT_PAUSE_MIN_MS]).
      * Medium pauses are [[SIGNIFICANT_PAUSE_MIN_MS], [LONG_PAUSE_THRESHOLD_MS]).
+     *
+     * Also the speaking-block merge threshold: silence below this stays inside
+     * the current effective speaking block; silence ≥ this closes the block at
+     * silence onset.
      */
     const val SIGNIFICANT_PAUSE_MIN_MS: Int = 500
+
+    /** Alias for [SIGNIFICANT_PAUSE_MIN_MS] — effective speaking-block split threshold. */
+    const val MEDIUM_PAUSE_THRESHOLD_MS: Int = SIGNIFICANT_PAUSE_MIN_MS
 
     /**
      * Long-pause threshold (ms). Pauses ≥ this value are “pause lunghe”.

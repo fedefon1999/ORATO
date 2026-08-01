@@ -35,6 +35,7 @@ import kotlinx.coroutines.withContext
  * - All reads run off the main thread.
  * - At most one [AudioRecord] instance; shutdown is idempotent.
  * - Writes `cacheDir/orato_sessions/{sessionId}.wav` (path never shown in UI).
+ * - Completed WAV is kept for optional post-session offline transcription.
  */
 class AudioRecorder(
     private val appContext: Context,
@@ -64,6 +65,19 @@ class AudioRecorder(
 
     private val _metrics = MutableStateFlow(AudioSessionMetrics.idle())
     val metrics: StateFlow<AudioSessionMetrics> = _metrics.asStateFlow()
+
+    /**
+     * Path of the completed session WAV when [AudioRecordingState.Completed], else null.
+     * Used for post-session offline transcription — never shown in the UI.
+     */
+    fun completedWavFile(): File? {
+        val file = outputFile
+        return if (_state.value == AudioRecordingState.Completed && file != null && file.isFile) {
+            file
+        } else {
+            null
+        }
+    }
 
     /**
      * Starts capture for a new practice session.
@@ -130,7 +144,10 @@ class AudioRecorder(
                 prior == AudioRecordingState.Error
             ) {
                 if (!stopOnce.get()) stopOnce.set(true)
-                cleanupFailedFile()
+                // Never delete a successfully completed WAV here — Whisper may still need it.
+                if (prior != AudioRecordingState.Completed) {
+                    cleanupFailedFile()
+                }
                 releaseRecorderOnly()
                 return
             }
@@ -158,13 +175,26 @@ class AudioRecorder(
 
     /**
      * Full reset between exercises / when leaving the practice screen.
-     * Stops recording, deletes incomplete files, clears metrics.
+     * Stops recording; does not delete a WAV that is leased for post-session analysis.
      */
     suspend fun reset() {
         stop(completed = false)
         stopMutex.withLock {
             stopOnce.set(false)
             keepFileOnStop = false
+            val file = outputFile
+            if (file != null && SessionWavRetention.isRetained(file)) {
+                // Keep path for Whisper; clear recorder state only.
+                sessionId = null
+                sampleRateHz = 0
+                audioSourceLabel = null
+                analyzer = null
+                accumulator = null
+                _metrics.value = AudioSessionMetrics.idle()
+                _state.value = AudioRecordingState.Idle
+                _liveDebug.value = LiveAudioDebug()
+                return
+            }
             sessionId = null
             outputFile = null
             sampleRateHz = 0
@@ -391,6 +421,7 @@ class AudioRecorder(
                 acc.finalizeOpenSegment()
                 _metrics.value = AudioSessionMetrics.recordingError(msg).copy(
                     capturedDurationMs = acc.capturedDurationMs(),
+                    speechDurationMs = null,
                     droppedReadCount = acc.droppedReadCount(),
                     sampleRateHz = rate.takeIf { it > 0 },
                     audioSourceLabel = source,

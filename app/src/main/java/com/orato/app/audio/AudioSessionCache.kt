@@ -37,11 +37,12 @@ object AudioSessionCache {
         val retainName = retainSessionId?.let { "$it.wav" }
         dir.listFiles()?.forEach { file ->
             if (!file.isFile || !file.name.endsWith(".wav", ignoreCase = true)) return@forEach
+            if (SessionWavRetention.isRetained(file)) return@forEach
             val tooOld = now - file.lastModified() > AudioMetricsConfig.CACHE_MAX_AGE_MS
             val isRetained = retainName != null && file.name == retainName
             if (!isRetained || tooOld) {
                 // At session start retainSessionId is null → delete all prior WAVs.
-                // Safety: always delete too-old files.
+                // Safety: always delete too-old files (unless actively leased).
                 if (retainSessionId == null || tooOld || !isRetained) {
                     file.delete()
                 }
@@ -51,15 +52,17 @@ object AudioSessionCache {
 
     fun deleteSessionFile(cacheDir: File, sessionId: String) {
         val file = sessionFile(cacheDir, sessionId)
-        if (file.exists()) {
+        if (file.exists() && !SessionWavRetention.isRetained(file)) {
             file.delete()
         }
     }
 
-    /** Deletes a file if it exists; swallows failures (best-effort cleanup). */
+    /** Deletes a file if it exists and is not leased; swallows failures. */
     fun deleteQuietly(file: File?) {
         try {
-            file?.delete()
+            if (file != null && !SessionWavRetention.isRetained(file)) {
+                file.delete()
+            }
         } catch (_: Exception) {
             // best-effort
         }

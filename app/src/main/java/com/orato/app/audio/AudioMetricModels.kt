@@ -59,12 +59,46 @@ data class AudioSessionMetrics(
     val inputQuality: AudioInputQuality,
     /** Actual successfully captured duration in milliseconds. */
     val capturedDurationMs: Long,
+    /**
+     * Discourse span: first confirmed speech onset → final speech offset (ms).
+     * Includes all internal pauses. Used for WPM and delivery-rate metrics.
+     * Null when insufficient / error.
+     */
+    val speechDurationMs: Long? = null,
+    /**
+     * Sum of raw VAD-qualified speech frames only (excludes all silence).
+     * Debug / diagnostics — not shown in the normal report.
+     */
+    val rawVoicedDurationMs: Long? = null,
+    /**
+     * Sum of merged speaking-block durations (brief gaps only).
+     * Debug / estimated vocal activity — not the WPM denominator.
+     */
+    val effectiveSpeechBlockDurationMs: Long? = null,
+    /**
+     * Duration of brief gaps (&lt; medium threshold) merged into speaking blocks.
+     * Debug only.
+     */
+    val briefGapsMergedMs: Long? = null,
+    /** First confirmed speech onset (ms). Debug. */
+    val firstSpeechOnsetMs: Long? = null,
+    /** Final confirmed speech offset (ms). Debug. */
+    val lastSpeechOffsetMs: Long? = null,
+    /** Leading silence before first speech (ms). Debug. */
+    val leadingSilenceMs: Long? = null,
+    /** Trailing silence after last speech (ms). Debug. */
+    val trailingSilenceMs: Long? = null,
+    /**
+     * Longest effective speaking block duration (ms).
+     * Null when insufficient / error.
+     */
+    val longestSpeechSegmentMs: Long? = null,
     val droppedReadCount: Int,
     val sampleRateHz: Int?,
     val audioSourceLabel: String?,
     /**
-     * Speech time / captured time as a percentage (0–100), or null if insufficient.
-     * Speech time comes from finalized speech segments — never from total capture.
+     * Estimated vocal-activity percentage from speech-block duration / capture.
+     * Debug / quality classification — not “discourse duration” percentage.
      */
     val speechRatioPercent: Double?,
     /**
@@ -100,12 +134,24 @@ data class AudioSessionMetrics(
      */
     val insufficientData: Boolean,
 ) {
+    /** Alias for [speechDurationMs] — first→last speech span. */
+    val speechSpanDurationMs: Long? get() = speechDurationMs
+
     companion object {
         fun idle(): AudioSessionMetrics =
             AudioSessionMetrics(
                 state = AudioRecordingState.Idle,
                 inputQuality = AudioInputQuality.INSUFFICIENT_AUDIO,
                 capturedDurationMs = 0L,
+                speechDurationMs = null,
+                rawVoicedDurationMs = null,
+                effectiveSpeechBlockDurationMs = null,
+                briefGapsMergedMs = null,
+                firstSpeechOnsetMs = null,
+                lastSpeechOffsetMs = null,
+                leadingSilenceMs = null,
+                trailingSilenceMs = null,
+                longestSpeechSegmentMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
                 audioSourceLabel = null,
@@ -127,6 +173,15 @@ data class AudioSessionMetrics(
                 state = AudioRecordingState.Error,
                 inputQuality = AudioInputQuality.RECORDING_ERROR,
                 capturedDurationMs = 0L,
+                speechDurationMs = null,
+                rawVoicedDurationMs = null,
+                effectiveSpeechBlockDurationMs = null,
+                briefGapsMergedMs = null,
+                firstSpeechOnsetMs = null,
+                lastSpeechOffsetMs = null,
+                leadingSilenceMs = null,
+                trailingSilenceMs = null,
+                longestSpeechSegmentMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
                 audioSourceLabel = null,
@@ -147,8 +202,11 @@ data class AudioSessionMetrics(
 
 /**
  * Combined local practice report handed across navigation.
+ * [speech] may be updated after navigation when transcription finishes late.
  */
 data class SessionPracticeReport(
     val body: com.orato.app.metrics.SessionBodyReport,
     val audio: AudioSessionMetrics,
+    val speech: com.orato.app.speech.SpeechSessionResult =
+        com.orato.app.speech.SpeechSessionResult.NotAttempted,
 )

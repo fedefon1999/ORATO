@@ -7,12 +7,15 @@ import com.orato.app.audio.AudioRecorder
 import com.orato.app.audio.AudioRecordingState
 import com.orato.app.audio.AudioSessionMetrics
 import com.orato.app.audio.LiveAudioDebug
-import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.metrics.BodyMetricsEngine
 import com.orato.app.metrics.LiveBodyMetrics
 import com.orato.app.metrics.SessionBodyReport
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
+import com.orato.app.report.ReportPreparationCoordinator
+import com.orato.app.speech.WhisperModelManager
+import com.orato.app.speech.WhisperModelState
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -40,6 +43,7 @@ data class PracticeUiState(
     val audioMetrics: AudioSessionMetrics = AudioSessionMetrics.idle(),
     /** When false, body session remains usable but voice metrics are unavailable. */
     val microphoneAvailable: Boolean = true,
+    val whisperModelState: WhisperModelState = WhisperModelState.Checking,
 ) {
     val progress: Float
         get() = 1f - (remainingSeconds.toFloat() / SESSION_DURATION_SECONDS.toFloat())
@@ -63,20 +67,30 @@ data class PracticeUiState(
         get() = audioDebug.state
 }
 
+/** Navigation signal after timer finalization — never carries a partial report. */
+data class SessionEndedNavigation(
+    val sessionId: String,
+    val scenarioRouteArg: String,
+)
+
 class PracticeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(PracticeUiState())
     val uiState: StateFlow<PracticeUiState> = _uiState.asStateFlow()
 
-    private val _sessionCompleted = MutableSharedFlow<SessionPracticeReport>(extraBufferCapacity = 1)
-    val sessionCompleted: SharedFlow<SessionPracticeReport> = _sessionCompleted.asSharedFlow()
+    private val _sessionEnded = MutableSharedFlow<SessionEndedNavigation>(extraBufferCapacity = 1)
+    val sessionEnded: SharedFlow<SessionEndedNavigation> = _sessionEnded.asSharedFlow()
 
     private var timerJob: Job? = null
     private val poseUpdatesEnabled = AtomicBoolean(true)
     private val metricsEngine = BodyMetricsEngine()
     private val audioRecorder = AudioRecorder(application.applicationContext)
+    private val modelManager = WhisperModelManager(application.applicationContext)
+    private val reportPrep = ReportPreparationCoordinator.get(application.applicationContext)
 
     private val finishing = AtomicBoolean(false)
+    private var activeScenarioRouteArg: String = ""
+    private var activeScenarioDisplayName: String = ""
 
     init {
         viewModelScope.launch {
@@ -89,13 +103,42 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 _uiState.update { it.copy(audioMetrics = metrics) }
             }
         }
+        viewModelScope.launch {
+            modelManager.state.collect { modelState ->
+                _uiState.update { it.copy(whisperModelState = modelState) }
+            }
+        }
+        viewModelScope.launch {
+            modelManager.refresh()
+        }
+    }
+
+    fun bindScenario(routeArg: String, displayName: String) {
+        activeScenarioRouteArg = routeArg
+        activeScenarioDisplayName = displayName
+    }
+
+    /** Explicit user action — never called implicitly on screen entry. */
+    fun downloadWhisperModel() {
+        viewModelScope.launch {
+            modelManager.download()
+        }
+    }
+
+    fun cancelWhisperModelDownload() {
+        modelManager.cancelDownload()
+    }
+
+    fun removeWhisperModel() {
+        viewModelScope.launch {
+            modelManager.removeModel()
+        }
     }
 
     fun onMicrophoneAvailabilityChanged(available: Boolean) {
         val wasAvailable = _uiState.value.microphoneAvailable
         _uiState.update { it.copy(microphoneAvailable = available) }
         if (!available && wasAvailable && _uiState.value.isRunning) {
-            // Permission revoked mid-session — stop audio once; body session continues.
             audioRecorder.markUnavailable("Permesso microfono revocato")
             viewModelScope.launch {
                 audioRecorder.stop(completed = false)
@@ -103,7 +146,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /** Called when the practice screen / app moves to background. */
     fun onLeaveForeground() {
         val running = _uiState.value.isRunning
         val capturing = _uiState.value.audioState == AudioRecordingState.Recording ||
@@ -160,11 +202,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /**
-     * Cancels the timer and clears metric accumulators so the next session
-     * cannot inherit prior samples. Live preview continues without aggregation.
-     * Stops audio exactly once and deletes the incomplete WAV.
-     */
     fun resetSession() {
         timerJob?.cancel()
         timerJob = null
@@ -177,7 +214,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         restoreIdleUiPreservingPose()
     }
 
-    /** Like [resetSession] but assumes audio stop was already requested. */
     private fun resetSessionKeepingAudioStop() {
         timerJob?.cancel()
         timerJob = null
@@ -194,6 +230,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         val poseStatus = _uiState.value.poseStatus
         val poseFrame = _uiState.value.poseFrame
         val micOk = _uiState.value.microphoneAvailable
+        val modelState = _uiState.value.whisperModelState
         _uiState.value = PracticeUiState(
             poseStatus = when (poseStatus) {
                 is PoseDetectionStatus.Error -> poseStatus
@@ -206,9 +243,14 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             microphoneAvailable = micOk,
             audioDebug = LiveAudioDebug(),
             audioMetrics = AudioSessionMetrics.idle(),
+            whisperModelState = modelState,
         )
     }
 
+    /**
+     * Stops capture exactly once, finalizes body/audio, starts report preparation,
+     * then emits navigation to ReportPreparationScreen — never a partial final report.
+     */
     private fun finishSession() {
         if (!finishing.compareAndSet(false, true)) return
         metricsEngine.stopAccumulation()
@@ -217,6 +259,12 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             audioRecorder.stop(completed = true)
             val audioMetrics = audioRecorder.metrics.value
+            val wav = audioRecorder.completedWavFile()
+            val sessionId = UUID.randomUUID().toString()
+            if (wav != null) {
+                com.orato.app.audio.SessionWavRetention.retain(wav)
+            }
+
             _uiState.update {
                 it.copy(
                     remainingSeconds = 0,
@@ -226,8 +274,23 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                     audioMetrics = audioMetrics,
                 )
             }
-            _sessionCompleted.tryEmit(
-                SessionPracticeReport(body = bodyReport, audio = audioMetrics),
+
+            val modelReady = modelManager.ensureReadyFromDisk()
+            reportPrep.start(
+                scenarioName = activeScenarioDisplayName.ifBlank { "Sessione" },
+                totalSessionDurationMs = SESSION_DURATION_SECONDS * 1_000L,
+                body = bodyReport,
+                audio = audioMetrics,
+                wavFile = wav,
+                modelReady = modelReady,
+                sessionId = sessionId,
+            )
+
+            _sessionEnded.tryEmit(
+                SessionEndedNavigation(
+                    sessionId = sessionId,
+                    scenarioRouteArg = activeScenarioRouteArg,
+                ),
             )
         }
     }
@@ -251,7 +314,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         _uiState.update {
             it.copy(
                 poseFrame = frame,
-                // Latched torso hysteresis from the metrics engine — never a single frame.
                 poseStatus = if (live.validDetection) {
                     PoseDetectionStatus.Detected
                 } else {
@@ -269,6 +331,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         timerJob?.cancel()
         metricsEngine.release()
         audioRecorder.resetAsync()
+        // Report preparation continues on the application-scoped coordinator.
         super.onCleared()
     }
 }

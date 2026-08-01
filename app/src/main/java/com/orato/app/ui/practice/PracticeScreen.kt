@@ -41,17 +41,19 @@ import com.google.accompanist.permissions.PermissionStatus
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
-import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.domain.model.Scenario
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
+import com.orato.app.speech.SpeechConfig
+import com.orato.app.speech.SpeechReportPresentation
+import com.orato.app.speech.WhisperModelState
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
 fun PracticeScreen(
     scenario: Scenario,
     onExit: () -> Unit,
-    onSessionComplete: (SessionPracticeReport) -> Unit,
+    onSessionEnded: (SessionEndedNavigation) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: PracticeViewModel = viewModel(),
 ) {
@@ -59,9 +61,13 @@ fun PracticeScreen(
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
     val micPermission = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
 
+    LaunchedEffect(scenario.routeArg, scenario.displayName) {
+        viewModel.bindScenario(scenario.routeArg, scenario.displayName)
+    }
+
     LaunchedEffect(viewModel) {
-        viewModel.sessionCompleted.collect { report ->
-            onSessionComplete(report)
+        viewModel.sessionEnded.collect { nav ->
+            onSessionEnded(nav)
         }
     }
 
@@ -79,7 +85,6 @@ fun PracticeScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            // Leaving the practice screen — stop capture exactly once.
             viewModel.onLeaveForeground()
         }
     }
@@ -111,6 +116,9 @@ fun PracticeScreen(
                     onRequestMicrophone = { micPermission.launchPermissionRequest() },
                     onStart = viewModel::startSession,
                     onReset = viewModel::resetSession,
+                    onDownloadModel = viewModel::downloadWhisperModel,
+                    onCancelDownload = viewModel::cancelWhisperModelDownload,
+                    onRemoveModel = viewModel::removeWhisperModel,
                     onPoseFrame = viewModel::onPoseFrame,
                     onPoseStatus = viewModel::onPoseStatus,
                     modifier = Modifier
@@ -193,6 +201,9 @@ private fun PracticeSessionContent(
     onRequestMicrophone: () -> Unit,
     onStart: () -> Unit,
     onReset: () -> Unit,
+    onDownloadModel: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onRemoveModel: () -> Unit,
     onPoseFrame: (UpperBodyPoseFrame) -> Unit,
     onPoseStatus: (PoseDetectionStatus) -> Unit,
     modifier: Modifier = Modifier,
@@ -261,9 +272,17 @@ private fun PracticeSessionContent(
             )
         }
 
+        WhisperModelStatusRow(
+            state = uiState.whisperModelState,
+            sessionRunning = uiState.isRunning || uiState.isFinished,
+            onDownload = onDownloadModel,
+            onCancelDownload = onCancelDownload,
+            onRemove = onRemoveModel,
+        )
+
         Text(
             text = "L’audio viene analizzato durante l’esercizio e salvato temporaneamente " +
-                "sul dispositivo. Non viene ancora caricato online.",
+                "sul dispositivo. La trascrizione offline avviene dopo la sessione, se il modello è pronto.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -289,7 +308,7 @@ private fun PracticeSessionContent(
 
         Text(
             text = when {
-                uiState.isFinished -> "Sessione completata. Apertura report…"
+                uiState.isFinished -> "Sessione completata. Preparazione del report…"
                 uiState.isRunning -> "Parla con naturalezza. Mantieni lo sguardo verso la fotocamera."
                 else -> "Quando sei pronto, avvia i 90 secondi di pratica."
             },
@@ -319,6 +338,61 @@ private fun PracticeSessionContent(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Avvia 90 secondi")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WhisperModelStatusRow(
+    state: WhisperModelState,
+    sessionRunning: Boolean,
+    onDownload: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val label = SpeechReportPresentation.modelStatusLabel(state)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (!sessionRunning &&
+            (state is WhisperModelState.NotDownloaded ||
+                state is WhisperModelState.Invalid ||
+                state is WhisperModelState.Error)
+        ) {
+            Text(
+                text = SpeechConfig.MODEL_NOT_READY_SESSION_HINT,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            )
+        }
+        if (!sessionRunning) {
+            when {
+                SpeechReportPresentation.showDownloadAction(state) -> {
+                    TextButton(onClick = onDownload) {
+                        Text("Scarica modello")
+                    }
+                }
+                state is WhisperModelState.Downloading -> {
+                    TextButton(onClick = onCancelDownload) {
+                        Text("Annulla download")
+                    }
+                }
+                SpeechReportPresentation.showRemoveAction(state) -> {
+                    TextButton(onClick = onRemove) {
+                        Text("Rimuovi modello")
+                    }
                 }
             }
         }

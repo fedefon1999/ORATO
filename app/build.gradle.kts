@@ -7,15 +7,33 @@ plugins {
 android {
     namespace = "com.orato.app"
     compileSdk = 35
+    // NDK r27c — installed locally under .tools/ or the Android SDK ndk folder.
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.orato.app"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17")
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DGGML_OPENMP=OFF",
+                    "-DGGML_NATIVE=OFF",
+                )
+            }
+        }
+
+        ndk {
+            // Minimum required ABI; matches MediaPipe primary target.
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -25,6 +43,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+        }
+        debug {
+            // Keep native code optimized even in debug APKs.
+            externalNativeBuild {
+                cmake {
+                    arguments += listOf("-DCMAKE_BUILD_TYPE=RelWithDebInfo")
+                }
+            }
         }
     }
 
@@ -41,9 +67,19 @@ android {
         compose = true
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            useLegacyPackaging = false
         }
     }
 }
@@ -75,7 +111,7 @@ dependencies {
     // Permissions
     implementation("com.google.accompanist:accompanist-permissions:0.36.0")
 
-    // MediaPipe Pose Landmarker (dependency ready for later posture analysis)
+    // MediaPipe Pose Landmarker
     implementation("com.google.mediapipe:tasks-vision:0.10.26.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")

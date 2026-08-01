@@ -13,7 +13,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -28,7 +33,10 @@ import com.orato.app.metrics.GestureActivityMetric
 import com.orato.app.metrics.PercentMetric
 import com.orato.app.metrics.ScoredMetric
 import com.orato.app.metrics.SessionBodyReport
-
+import com.orato.app.speech.SpeechConfig
+import com.orato.app.speech.SpeechIntelligenceMetrics
+import com.orato.app.speech.SpeechReportPresentation
+import com.orato.app.speech.SpeechSessionResult
 @Composable
 fun BodyReportScreen(
     scenario: Scenario,
@@ -69,6 +77,10 @@ fun BodyReportScreen(
 
         VoiceSection(report.audio)
 
+        Spacer(modifier = Modifier.height(8.dp))
+
+        SpeechSection(speech = report.speech, audio = report.audio)
+
         Spacer(modifier = Modifier.height(16.dp))
 
         Button(
@@ -88,6 +100,11 @@ fun BodyReportScreen(
 
 @Composable
 private fun BodySection(report: SessionBodyReport) {
+    Text(
+        text = "Corpo",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onBackground,
+    )
     ReportPercentRow(
         label = "Presenza in camera",
         metric = report.cameraPresence,
@@ -122,7 +139,7 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         color = MaterialTheme.colorScheme.onBackground,
     )
     Text(
-        text = "Pause approssimative dall’audio (nessuna trascrizione ancora).",
+        text = "Volume e qualità dall’audio locale.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -150,13 +167,6 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         return
     }
 
-    val buckets = audio.pauseBuckets ?: PauseBuckets.empty()
-
-    Text(
-        text = "Sintesi",
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.onBackground,
-    )
     ReportLine(
         label = "Acquisizione",
         value = VoiceReportPresentation.acquisitionLabel(
@@ -164,32 +174,16 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         ),
     )
     ReportLine(
-        label = "Volume",
-        value = VoiceReportPresentation.volumeLabel(
-            VoiceReportPresentation.volumeSummary(audio),
-        ),
-    )
-    ReportLine(
-        label = "Pause lunghe",
-        value = VoiceReportPresentation.longPauseLabel(
-            VoiceReportPresentation.longPauseSummary(audio),
-        ),
-    )
-
-    Spacer(modifier = Modifier.height(4.dp))
-
-    ReportLine(
         label = "Durata catturata",
         value = formatDurationMs(audio.capturedDurationMs),
     )
     ReportLine(
-        label = "Rapporto di parlato",
-        value = audio.speechRatioPercent?.let { "%.0f%%".format(it) } ?: "—",
+        label = "Durata del discorso",
+        value = audio.speechDurationMs?.let { formatDurationMs(it) } ?: "—",
     )
     if (audio.meanSpeechDbfs == null) {
         ReportLine(label = "Volume medio", value = "Dati insufficienti")
     } else {
-        // Signed dBFS (typically negative). Never convert to a positive number.
         ReportLine(
             label = "Volume medio",
             value = VoiceReportPresentation.formatMeanVolumeDbfs(audio.meanSpeechDbfs),
@@ -201,25 +195,65 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         )
     }
     ReportLine(
-        label = "Variazione di volume",
+        label = "Variazione del volume",
         value = audio.volumeVariationStdDevDb?.let { "%.2f dB σ".format(it) } ?: "—",
     )
+    ReportLine(
+        label = "Clipping",
+        value = audio.clippingPercent?.let { "%.2f%%".format(it) } ?: "—",
+    )
+}
 
-    Spacer(modifier = Modifier.height(4.dp))
-
+@Composable
+private fun SpeechSection(
+    speech: SpeechSessionResult,
+    audio: AudioSessionMetrics,
+) {
     Text(
-        text = "Pause",
-        style = MaterialTheme.typography.titleMedium,
+        text = "Ritmo e fluidità",
+        style = MaterialTheme.typography.titleLarge,
         color = MaterialTheme.colorScheme.onBackground,
     )
+
+    when (speech) {
+        SpeechSessionResult.NotAttempted,
+        is SpeechSessionResult.Unavailable,
+        -> {
+            Text(
+                text = SpeechConfig.METRICS_UNAVAILABLE_REPORT,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            PauseMetricsBlock(audio)
+        }
+        is SpeechSessionResult.Processing -> {
+            Text(
+                text = SpeechReportPresentation.transcriptionStatusLabel(speech.state),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            PauseMetricsBlock(audio)
+        }
+        is SpeechSessionResult.Ready -> {
+            SpeechMetricsBlock(speech.metrics)
+            PauseMetricsBlock(audio)
+        }
+    }
+}
+
+@Composable
+private fun PauseMetricsBlock(audio: AudioSessionMetrics) {
+    if (audio.insufficientData ||
+        audio.inputQuality == AudioInputQuality.INSUFFICIENT_AUDIO ||
+        audio.inputQuality == AudioInputQuality.RECORDING_ERROR
+    ) {
+        return
+    }
+    val buckets = audio.pauseBuckets ?: PauseBuckets.empty()
     Text(
         text = VoiceReportPresentation.PAUSE_INTERPRETATION,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    ReportLine(
-        label = "Pause brevi",
-        value = buckets.briefCount.toString(),
     )
     ReportLine(
         label = "Pause significative",
@@ -230,17 +264,48 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         value = buckets.longCount.toString(),
     )
     ReportLine(
-        label = "Durata mediana pausa",
-        value = audio.medianPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
-    )
-    ReportLine(
         label = "Pausa più lunga",
         value = audio.longestPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
     )
     ReportLine(
-        label = "Clipping",
-        value = audio.clippingPercent?.let { "%.2f%%".format(it) } ?: "—",
+        label = "Durata mediana delle pause",
+        value = audio.medianPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
     )
+}
+
+@Composable
+private fun SpeechMetricsBlock(metrics: SpeechIntelligenceMetrics) {
+    var breakdownExpanded by rememberSaveable { mutableStateOf(false) }
+    val markers = metrics.discourseMarkers
+
+    ReportLine(label = "Parole", value = SpeechReportPresentation.formatWordCount(metrics.wordCount))
+    ReportLine(label = "Ritmo", value = SpeechReportPresentation.formatWpm(metrics.wordsPerMinute))
+    ReportLine(
+        label = "Intercalari discorsivi stimati",
+        value = SpeechReportPresentation.formatDiscourseMarkerCount(markers.totalCount),
+    )
+    ReportLine(
+        label = "Intercalari discorsivi al minuto",
+        value = SpeechReportPresentation.formatMarkersPerMinute(markers.markersPerMinute),
+    )
+    ReportLine(
+        label = "Ripetizioni ravvicinate",
+        value = SpeechReportPresentation.formatImmediateRepetitions(metrics.immediateRepetitionCount),
+    )
+
+    if (markers.breakdown.isNotEmpty()) {
+        TextButton(onClick = { breakdownExpanded = !breakdownExpanded }) {
+            Text(
+                if (breakdownExpanded) "Nascondi dettaglio intercalari"
+                else "Mostra dettaglio intercalari",
+            )
+        }
+        if (breakdownExpanded) {
+            markers.breakdown.forEach { (word, count) ->
+                ReportLine(label = word, value = count.toString())
+            }
+        }
+    }
 }
 
 private fun formatDurationMs(ms: Long): String {

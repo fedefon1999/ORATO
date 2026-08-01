@@ -93,7 +93,8 @@ class AudioSessionAccumulator(
         qualifiedSpeechSegments().size
 
     fun finalizedInternalPauseCount(): Int =
-        computeInternalPauses(qualifiedSpeechSegments()).buckets.rawCount
+        EffectiveSpeakingBlocks.build(qualifiedSpeechSegments())
+            .significantPauseDurationsMs.size
 
     fun liveSnapshot(
         state: AudioRecordingState,
@@ -169,6 +170,15 @@ class AudioSessionAccumulator(
                 state = AudioRecordingState.Error,
                 inputQuality = AudioInputQuality.RECORDING_ERROR,
                 capturedDurationMs = capturedDurationMs(),
+                speechDurationMs = null,
+                rawVoicedDurationMs = null,
+                effectiveSpeechBlockDurationMs = null,
+                briefGapsMergedMs = null,
+                firstSpeechOnsetMs = null,
+                lastSpeechOffsetMs = null,
+                leadingSilenceMs = null,
+                trailingSilenceMs = null,
+                longestSpeechSegmentMs = null,
                 droppedReadCount = droppedReads,
                 sampleRateHz = sampleRateHz,
                 audioSourceLabel = audioSourceLabel,
@@ -194,14 +204,25 @@ class AudioSessionAccumulator(
         }
 
         val speechSegments = qualifiedSpeechSegments()
-        val speechMs = speechSegments.sumOf { it.durationMs }
-        // Speech ratio from actual speech duration on the timeline — never raw capture.
+        val timeline = EffectiveSpeakingBlocks.build(
+            qualifiedSpeechSegments = speechSegments,
+            capturedDurationMs = durationMs,
+            mediumPauseThresholdMs = config.MEDIUM_PAUSE_THRESHOLD_MS,
+        )
+        val spanMs = timeline.speechSpanDurationMs
+        val blockMs = timeline.effectiveSpeechBlockDurationMs
+        val rawVoiced = timeline.rawVoicedDurationMs
+        val longestSpeech = timeline.longestContinuousSpeechMs
+        // Quality / estimated vocal activity uses block duration (not discourse span).
         val speechRatio = if (durationMs > 0L) {
-            speechMs.toDouble() / durationMs.toDouble()
+            blockMs.toDouble() / durationMs.toDouble()
         } else {
             0.0
         }
-        val pauses = computeInternalPauses(speechSegments)
+        val pauses = PauseBuckets.fromDurations(timeline.significantPauseDurationsMs)
+        val pauseMedian = pauses.rawPauseDurationsMs.takeIf { it.isNotEmpty() }
+            ?.let { PcmMath.medianLong(it) }
+        val pauseLongest = pauses.rawPauseDurationsMs.maxOrNull()
 
         val meanSpeech = when {
             speechDbfsLevels.isEmpty() || speechSegments.isEmpty() -> null
@@ -232,6 +253,15 @@ class AudioSessionAccumulator(
                 state = state,
                 inputQuality = AudioInputQuality.INSUFFICIENT_AUDIO,
                 capturedDurationMs = durationMs,
+                speechDurationMs = spanMs.takeIf { speechSegments.isNotEmpty() && spanMs > 0L },
+                rawVoicedDurationMs = rawVoiced.takeIf { speechSegments.isNotEmpty() },
+                effectiveSpeechBlockDurationMs = blockMs.takeIf { speechSegments.isNotEmpty() },
+                briefGapsMergedMs = timeline.briefGapsMergedMs.takeIf { speechSegments.isNotEmpty() },
+                firstSpeechOnsetMs = timeline.firstConfirmedSpeechStartMs,
+                lastSpeechOffsetMs = timeline.lastConfirmedSpeechEndMs,
+                leadingSilenceMs = timeline.leadingSilenceMs.takeIf { speechSegments.isNotEmpty() },
+                trailingSilenceMs = timeline.trailingSilenceMs.takeIf { speechSegments.isNotEmpty() },
+                longestSpeechSegmentMs = longestSpeech.takeIf { speechSegments.isNotEmpty() },
                 droppedReadCount = droppedReads,
                 sampleRateHz = sampleRateHz,
                 audioSourceLabel = audioSourceLabel,
@@ -253,6 +283,15 @@ class AudioSessionAccumulator(
             state = state,
             inputQuality = quality,
             capturedDurationMs = durationMs,
+            speechDurationMs = spanMs,
+            rawVoicedDurationMs = rawVoiced,
+            effectiveSpeechBlockDurationMs = blockMs,
+            briefGapsMergedMs = timeline.briefGapsMergedMs,
+            firstSpeechOnsetMs = timeline.firstConfirmedSpeechStartMs,
+            lastSpeechOffsetMs = timeline.lastConfirmedSpeechEndMs,
+            leadingSilenceMs = timeline.leadingSilenceMs,
+            trailingSilenceMs = timeline.trailingSilenceMs,
+            longestSpeechSegmentMs = longestSpeech,
             droppedReadCount = droppedReads,
             sampleRateHz = sampleRateHz,
             audioSourceLabel = audioSourceLabel,
@@ -260,11 +299,11 @@ class AudioSessionAccumulator(
             meanSpeechDbfs = meanSpeech,
             volumeVariationStdDevDb = variation,
             clippingPercent = clippingPct,
-            approximatePauseCount = pauses.buckets.rawCount,
-            medianPauseDurationMs = pauses.medianMs,
-            longestPauseDurationMs = pauses.longestMs,
-            pausesOver1500Ms = pauses.buckets.longCount,
-            pauseBuckets = pauses.buckets,
+            approximatePauseCount = pauses.rawCount,
+            medianPauseDurationMs = pauseMedian,
+            longestPauseDurationMs = pauseLongest,
+            pausesOver1500Ms = pauses.longCount,
+            pauseBuckets = pauses,
             errorMessage = errorMessage,
             insufficientData = false,
         )
