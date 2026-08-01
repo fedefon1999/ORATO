@@ -13,7 +13,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -77,6 +77,9 @@ dependencies {
 
     // MediaPipe Pose Landmarker (dependency ready for later posture analysis)
     implementation("com.google.mediapipe:tasks-vision:0.10.26.1")
+
+    // On-device Italian speech recognition (alpha; abstracted behind SpeechTranscriber)
+    implementation("com.google.mlkit:genai-speech-recognition:1.0.0-alpha1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
