@@ -135,18 +135,91 @@ class SpeechMetricsCalculatorTest {
         val empty = SpeechMetricsCalculator.compute("", 30_000L, audio())
         assertEquals(0, empty!!.wordCount)
         assertNull(empty.wordsPerMinute)
+        assertNull(empty.fillersPerMinute)
+    }
+
+    @Test
+    fun fillersPerMinute_usesVadSpeechDuration() {
+        val text = "ehm ciao mondo ehm prova"
+        val metrics = SpeechMetricsCalculator.compute(text, 60_000L, audio(speechMs = 60_000L))
+        assertEquals(2, metrics!!.fillerCount)
+        assertEquals(2.0, metrics.fillersPerMinute!!, 1e-9)
+    }
+
+    @Test
+    fun zeroSpeechDuration_fillersPerMinuteUnavailable() {
+        assertNull(
+            SpeechMetricsCalculator.fillersPerMinute(
+                fillerCount = 3,
+                vadSpeechDurationMs = 0L,
+                transcriptEmpty = false,
+                audioQualityValid = true,
+            ),
+        )
+        val metrics = SpeechMetricsCalculator.compute("ehm ciao", 0L, audio(speechMs = 0L))
+        assertNull(metrics!!.fillersPerMinute)
+    }
+
+    @Test
+    fun wordCountRemainsCorrect_withFillersAndRepetitions() {
+        val text = "il il problema ehm è chiaro"
+        val metrics = SpeechMetricsCalculator.compute(text, 30_000L, audio(speechMs = 30_000L))
+        assertEquals(6, metrics!!.wordCount)
+        assertEquals(1, metrics.fillerCount)
+        assertEquals(1, metrics.immediateRepetitionCount)
+    }
+
+    @Test
+    fun metricsContainNoTranscriptField() {
+        val metrics = SpeechMetricsCalculator.compute("ciao ehm mondo", 30_000L, audio())!!
+        val names = metrics::class.java.declaredFields.map { it.name }
+        assertFalse(names.any { it.equals("transcript", ignoreCase = true) })
+        val presentation = SpeechReportPresentation.rhythmFluency(metrics)
+        assertFalse(presentation.toString().contains("ciao"))
     }
 }
 
 class FillerDetectorTest {
 
     @Test
-    fun eachSupportedFiller_detected() {
-        for (filler in FillerDetector.ALL_FILLERS) {
-            val result = FillerDetector.detect(filler)
-            assertEquals("failed for $filler", 1, result.fillerCount)
-            assertEquals(1, result.breakdown[filler])
-        }
+    fun ehm_detected() {
+        assertEquals(1, FillerDetector.detect("ehm").fillerCount)
+        assertEquals(1, FillerDetector.detect("ehm").breakdown["ehm"])
+    }
+
+    @Test
+    fun eh_detected() {
+        assertEquals(1, FillerDetector.detect("eh").fillerCount)
+    }
+
+    @Test
+    fun em_detected() {
+        assertEquals(1, FillerDetector.detect("em").fillerCount)
+    }
+
+    @Test
+    fun repeatedLetterVocalVariants_normalized() {
+        assertEquals(1, FillerDetector.detect("ehmm").fillerCount)
+        assertEquals(1, FillerDetector.detect("ehmm").breakdown["ehm"])
+        assertEquals(1, FillerDetector.detect("ehmmm").breakdown["ehm"])
+        assertEquals(1, FillerDetector.detect("uhmm").breakdown["uhm"])
+        assertEquals(1, FillerDetector.detect("mmmm").breakdown["mmm"])
+    }
+
+    @Test
+    fun uhmUmMhmMmm_detected() {
+        val result = FillerDetector.detect("uhm um mhm mmm")
+        assertEquals(4, result.fillerCount)
+        assertEquals(1, result.breakdown["uhm"])
+        assertEquals(1, result.breakdown["um"])
+        assertEquals(1, result.breakdown["mhm"])
+        assertEquals(1, result.breakdown["mmm"])
+    }
+
+    @Test
+    fun clearDiscourseFillers() {
+        val result = FillerDetector.detect("cioè praticamente diciamo insomma")
+        assertEquals(4, result.fillerCount)
     }
 
     @Test
@@ -160,10 +233,52 @@ class FillerDetectorTest {
     }
 
     @Test
+    fun accentedCioe() {
+        assertEquals(1, FillerDetector.detect("cioè").fillerCount)
+        assertEquals(1, FillerDetector.detect("cioè").breakdown["cioè"])
+    }
+
+    @Test
     fun noSubstringFalsePositives() {
         assertEquals(0, FillerDetector.detect("Il tempo del sistema emmental è buono").fillerCount)
         assertEquals(0, FillerDetector.detect("il volume alto").fillerCount)
         assertEquals(0, FillerDetector.detect("perché sì").fillerCount)
+    }
+
+    @Test
+    fun tipo_countedAsDiscourseMarker() {
+        assertEquals(1, FillerDetector.detect("Tipo, potremmo iniziare domani.").fillerCount)
+        assertEquals(1, FillerDetector.detect("Era, tipo, molto difficile.").fillerCount)
+        assertEquals(1, FillerDetector.detect("Era, tipo, molto difficile.").breakdown["tipo"])
+    }
+
+    @Test
+    fun tipo_nounConstruction_notCounted() {
+        assertEquals(0, FillerDetector.detect("Ho scelto un tipo di pane.").fillerCount)
+        assertEquals(0, FillerDetector.detect("un tipo di prodotto").fillerCount)
+    }
+
+    @Test
+    fun allora_countedAtDiscourseStart() {
+        assertEquals(1, FillerDetector.detect("Allora... quello che volevo dire è questo.").fillerCount)
+        assertEquals(1, FillerDetector.detect("Allora, possiamo partire.").breakdown["allora"])
+    }
+
+    @Test
+    fun daAllora_notCounted() {
+        assertEquals(0, FillerDetector.detect("Da allora non è cambiato nulla.").fillerCount)
+    }
+
+    @Test
+    fun contextualEcco() {
+        assertEquals(1, FillerDetector.detect("Ecco, il problema principale è questo.").fillerCount)
+        assertEquals(0, FillerDetector.detect("Ecco il documento richiesto.").fillerCount)
+    }
+
+    @Test
+    fun contextualDunque() {
+        assertEquals(1, FillerDetector.detect("Dunque, possiamo concludere.").fillerCount)
+        assertEquals(0, FillerDetector.detect("Dunque il risultato matematico è corretto.").fillerCount)
     }
 
     @Test
@@ -177,7 +292,42 @@ class FillerDetectorTest {
 
     @Test
     fun genericWords_notClassifiedAsFillers() {
-        assertEquals(0, FillerDetector.detect("tipo allora questo").fillerCount)
+        assertEquals(0, FillerDetector.detect("questo mondo bello").fillerCount)
+    }
+}
+
+class ImmediateRepetitionDetectorTest {
+
+    @Test
+    fun immediateRepeatedWords() {
+        val result = ImmediateRepetitionDetector.detect("il il problema")
+        assertEquals(1, result.count)
+        assertEquals(1, result.breakdown["il"])
+        assertEquals(1, ImmediateRepetitionDetector.detect("e e quindi").count)
+        assertEquals(1, ImmediateRepetitionDetector.detect("questo questo punto").count)
+        assertEquals(1, ImmediateRepetitionDetector.detect("voglio voglio spiegare").count)
+    }
+
+    @Test
+    fun noRepetitionAcrossSentenceBoundaries() {
+        assertEquals(0, ImmediateRepetitionDetector.detect("Bene. Bene andiamo.").count)
+        assertEquals(0, ImmediateRepetitionDetector.detect("Ok! Ok ripartiamo.").count)
+    }
+
+    @Test
+    fun fillerRepetitions_notDoubleCountedAsWordRepetitions() {
+        val fillers = FillerDetector.detect("ehm ehm ciao")
+        val reps = ImmediateRepetitionDetector.detect(
+            "ehm ehm ciao",
+            fillerTokenIndices = fillers.fillerTokenIndices,
+        )
+        assertEquals(2, fillers.fillerCount)
+        assertEquals(0, reps.count)
+    }
+
+    @Test
+    fun ignoresCapitalizationAndPunctuation() {
+        assertEquals(1, ImmediateRepetitionDetector.detect("Il, il problema").count)
     }
 }
 
@@ -415,7 +565,6 @@ class FakeSpeechTranscriber(
     private var result: TranscriptionResult? = TranscriptionResult(
         transcript = "ciao mondo",
         detectedLanguage = "it",
-        segments = listOf(TranscriptSegment("ciao mondo", 0, 1000)),
         processingDurationMs = 10,
     ),
     private var fail: Boolean = false,
@@ -487,6 +636,7 @@ class SpeechTranscriberFakeTest {
         assertFalse(report.audio.insufficientData)
         assertEquals(AudioInputQuality.GOOD, report.audio.inputQuality)
         assertTrue(report.speech is SpeechSessionResult.Unavailable)
+        assertEquals(-22.0, report.audio.meanSpeechDbfs!!, 1e-9)
     }
 
     @Test
@@ -495,9 +645,56 @@ class SpeechTranscriberFakeTest {
         fake.requestCancellation()
         assertTrue(fake.cancelled)
         assertEquals(
-            "Trascrizione annullata",
+            SpeechConfig.METRICS_UNAVAILABLE_REPORT,
             SpeechReportPresentation.transcriptionStatusLabel(TranscriptionState.Cancelled),
         )
+    }
+
+    @Test
+    fun analysisInProgressLabel_isRhythmNotTranscript() {
+        assertEquals(
+            SpeechConfig.ANALYSIS_IN_PROGRESS,
+            SpeechReportPresentation.transcriptionStatusLabel(TranscriptionState.Transcribing),
+        )
+        assertEquals("Analisi del ritmo in corso…", SpeechConfig.ANALYSIS_IN_PROGRESS)
+    }
+
+    @Test
+    fun reportPresentation_hasNoMostraTrascrizione() {
+        val metrics = SpeechIntelligenceMetrics(
+            wordCount = 10,
+            vadSpeechDurationMs = 30_000,
+            wordsPerMinute = 20.0,
+            fillerCount = 1,
+            fillersPerMinute = 2.0,
+            fillerBreakdown = mapOf("ehm" to 1),
+            immediateRepetitionCount = 0,
+            immediateRepetitionBreakdown = emptyMap(),
+        )
+        val presentation = SpeechReportPresentation.rhythmFluency(metrics)
+        val blob = listOf(
+            presentation.wordCountLabel,
+            presentation.wpmLabel,
+            presentation.fillerCountLabel,
+            presentation.fillersPerMinuteLabel,
+            presentation.immediateRepetitionLabel,
+            SpeechReportPresentation.formatFillerBreakdown(metrics.fillerBreakdown),
+        ).joinToString(" ")
+        assertFalse(blob.contains("Mostra trascrizione", ignoreCase = true))
+        assertFalse(blob.contains("Trascrizione", ignoreCase = true))
+        // Source UI must not expose transcript actions either.
+        val candidates = listOf(
+            java.io.File("src/main/java/com/orato/app/ui/report/BodyReportScreen.kt"),
+            java.io.File("app/src/main/java/com/orato/app/ui/report/BodyReportScreen.kt"),
+        )
+        val uiSource = candidates.firstOrNull { it.exists() }
+        assertNotNull("BodyReportScreen.kt should be readable for UI contract test", uiSource)
+        val text = uiSource!!.readText()
+        assertFalse(text.contains("Mostra trascrizione"))
+        assertFalse(text.contains("Trascrizione: Mostra"))
+        assertTrue(text.contains("Ritmo e fluidità"))
+        assertFalse(text.contains("Ritmo e trascrizione"))
+        assertFalse(text.contains("metrics.transcript"))
     }
 
     @Test
@@ -517,5 +714,14 @@ class SpeechTranscriberFakeTest {
             "Volume medio: -24,5 dBFS",
             com.orato.app.audio.VoiceReportPresentation.formatMeanVolumeDbfs(-24.5),
         )
+    }
+
+    @Test
+    fun whisperConfig_suppressNstFalseAndCarryPrompt() {
+        assertFalse(SpeechConfig.WHISPER_SUPPRESS_NST)
+        assertTrue(SpeechConfig.WHISPER_CARRY_INITIAL_PROMPT)
+        assertFalse(SpeechConfig.ENABLE_VAD_SILENCE_COLLAPSE)
+        assertFalse(SpeechConfig.ENABLE_DEBUG_TRANSCRIPT_PREVIEW)
+        assertTrue(SpeechConfig.WHISPER_INITIAL_PROMPT.contains("ehm"))
     }
 }
