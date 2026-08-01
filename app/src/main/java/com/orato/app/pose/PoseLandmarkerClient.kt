@@ -24,17 +24,31 @@ class PoseLandmarkerClient(
     context: Context,
     private val onResult: (UpperBodyPoseFrame) -> Unit,
     private val onError: (String) -> Unit,
+    private val sessionIdProvider: () -> Long = { 0L },
 ) {
     private val appContext = context.applicationContext
     private val closed = AtomicBoolean(false)
+    private val activeSessionId = java.util.concurrent.atomic.AtomicLong(0L)
+    private val pendingSessionId = java.util.concurrent.atomic.AtomicLong(0L)
+
+    @Volatile
+    var staleCallbackCount: Long = 0L
+        private set
+
     private var poseLandmarker: PoseLandmarker? = null
 
     val isReady: Boolean
         get() = poseLandmarker != null && !closed.get()
 
+    fun beginSession(sessionId: Long) {
+        activeSessionId.set(sessionId)
+        staleCallbackCount = 0L
+    }
+
     fun initialize() {
         if (closed.get()) return
         try {
+            activeSessionId.set(sessionIdProvider())
             val baseOptions = BaseOptions.builder()
                 .setModelAssetPath(MODEL_ASSET)
                 .setDelegate(Delegate.CPU)
@@ -112,6 +126,7 @@ class PoseLandmarkerClient(
             return
         }
 
+        pendingSessionId.set(sessionIdProvider())
         val mpImage = BitmapImageBuilder(rotatedBitmap).build()
         try {
             poseLandmarker?.detectAsync(mpImage, frameTime)
@@ -130,7 +145,16 @@ class PoseLandmarkerClient(
     }
 
     private fun onLivestreamResult(result: PoseLandmarkerResult, input: com.google.mediapipe.framework.image.MPImage) {
-        if (closed.get()) return
+        if (closed.get()) {
+            staleCallbackCount++
+            return
+        }
+        val expected = activeSessionId.get()
+        val pending = pendingSessionId.get()
+        if (expected != pending || expected != sessionIdProvider()) {
+            staleCallbackCount++
+            return
+        }
 
         val poseLandmarks = result.landmarks().firstOrNull()
         if (poseLandmarks == null) {
