@@ -879,10 +879,10 @@ class VoiceReportPresentationTest {
     @Test
     fun formatMeanVolumeDbfs_keepsNegativeSign() {
         val text = VoiceReportPresentation.formatMeanVolumeDbfs(-24.5)
-        assertEquals("Volume medio: -24.5 dBFS", text)
-        assertTrue(text.contains("-24.5"))
+        assertEquals("Volume medio: -24,5 dBFS", text)
+        assertTrue(text.contains("-24,5"))
         assertFalse(text.contains("Volume medio: +"))
-        assertFalse(text.contains("Volume medio: 24.5"))
+        assertFalse(text.contains("Volume medio: 24,5"))
     }
 
     @Test
