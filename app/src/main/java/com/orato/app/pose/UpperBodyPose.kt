@@ -24,6 +24,8 @@ data class UpperBodyPoseFrame(
     val landmarks: Map<PoseLandmarkId, NormalizedLandmarkPoint>,
     val imageWidth: Int,
     val imageHeight: Int,
+    /** Monotonic capture timestamp used for scheduling / calibration freshness. */
+    val timestampMs: Long = 0L,
 )
 
 sealed interface PoseDetectionStatus {

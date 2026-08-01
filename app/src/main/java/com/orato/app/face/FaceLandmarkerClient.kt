@@ -17,43 +17,45 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
+ * In-flight Face inference request. Capture timestamp drives metrics;
+ * submission/callback timestamps are diagnostics only.
+ */
+data class FaceInferenceRequest(
+    val requestToken: Long,
+    val sessionId: Long,
+    val captureTimestampMs: Long,
+    val submissionTimestampMs: Long,
+)
+
+/**
  * MediaPipe Face Landmarker wrapper for LIVE_STREAM camera frames.
  *
- * Create and [close] off the main thread when using CPU (same executor as ImageAnalysis).
- * Stale results after [close] or with a mismatched [sessionId] are ignored.
+ * Busy remains true from successful submit until the matching result/error/close.
+ * [FaceFrame.timestampMs] is the capture timestamp submitted to MediaPipe.
  */
 class FaceLandmarkerClient(
     context: Context,
     private val onResult: (FaceFrame) -> Unit,
     private val onError: (String) -> Unit,
     private val sessionIdProvider: () -> Long = { 0L },
+    private val onTerminal: ((requestToken: Long, sessionId: Long, success: Boolean) -> Unit)? = null,
 ) {
     private val appContext = context.applicationContext
     private val closed = AtomicBoolean(false)
     private val busy = AtomicBoolean(false)
-    private val lastAcceptedTimestampMs = AtomicLong(0L)
-    private val activeSessionId = AtomicReference(0L)
+    private val lastSubmittedCaptureMs = AtomicLong(0L)
+    private val activeSessionId = AtomicLong(0L)
+    private val inFlight = AtomicReference<FaceInferenceRequest?>(null)
     private var faceLandmarker: FaceLandmarker? = null
 
-    @Volatile
-    var skippedWhileBusy: Long = 0L
-        private set
-
-    @Volatile
-    var skippedByThrottle: Long = 0L
-        private set
-
-    @Volatile
-    var staleCallbackCount: Long = 0L
-        private set
-
-    @Volatile
-    var lastInferenceDurationMs: Long = 0L
-        private set
-
-    @Volatile
-    var acceptedResults: Long = 0L
-        private set
+    @Volatile var skippedWhileBusy: Long = 0L; private set
+    @Volatile var skippedByThrottle: Long = 0L; private set
+    @Volatile var staleCallbackCount: Long = 0L; private set
+    @Volatile var duplicateCallbackCount: Long = 0L; private set
+    @Volatile var lastInferenceDurationMs: Long = 0L; private set
+    @Volatile var acceptedResults: Long = 0L; private set
+    @Volatile var lastCaptureTimestampMs: Long = 0L; private set
+    @Volatile var lastCallbackTimestampMs: Long = 0L; private set
 
     val isReady: Boolean
         get() = faceLandmarker != null && !closed.get()
@@ -77,6 +79,7 @@ class FaceLandmarkerClient(
                 .setOutputFacialTransformationMatrixes(true)
                 .setResultListener(::onLivestreamResult)
                 .setErrorListener { error ->
+                    releaseInFlight(success = false)
                     if (!closed.get()) {
                         onError(error.message ?: "Errore durante il rilevamento del viso.")
                     }
@@ -102,42 +105,73 @@ class FaceLandmarkerClient(
         skippedWhileBusy = 0L
         skippedByThrottle = 0L
         staleCallbackCount = 0L
+        duplicateCallbackCount = 0L
         acceptedResults = 0L
-        lastAcceptedTimestampMs.set(0L)
+        lastSubmittedCaptureMs.set(0L)
+        inFlight.set(null)
+        busy.set(false)
+    }
+
+    /**
+     * Eligibility peek — must match [detectLiveStream] rejection rules.
+     */
+    fun canAcceptFrame(
+        captureTimestampMs: Long,
+        minIntervalMs: Long = FaceMetricsConfig.FACE_MIN_INTERVAL_MS,
+        sessionId: Long = sessionIdProvider(),
+    ): Boolean {
+        if (closed.get() || faceLandmarker == null) return false
+        if (sessionId != activeSessionId.get()) return false
+        if (busy.get()) return false
+        val last = lastSubmittedCaptureMs.get()
+        if (last > 0L) {
+            if (captureTimestampMs == last) return false
+            if (captureTimestampMs < last) return false
+            if (captureTimestampMs - last < minIntervalMs) return false
+        }
+        return true
     }
 
     /**
      * Consumes [imageProxy] exactly once (always closed).
-     * Applies in-flight busy protection and timestamp throttling.
+     * @param requestToken optional external token from [com.orato.app.vision.VisualFrameScheduler]
+     * @param captureTimestampMs monotonic capture time; defaults to uptime when omitted
      */
     fun detectLiveStream(
         imageProxy: ImageProxy,
         minIntervalMs: Long = FaceMetricsConfig.FACE_MIN_INTERVAL_MS,
+        requestToken: Long = 0L,
+        captureTimestampMs: Long = SystemClock.uptimeMillis(),
     ) {
         if (closed.get() || faceLandmarker == null) {
             imageProxy.close()
             return
         }
 
-        val now = SystemClock.uptimeMillis()
-        val last = lastAcceptedTimestampMs.get()
-        if (last > 0L && now - last < minIntervalMs) {
-            skippedByThrottle++
+        if (!canAcceptFrame(captureTimestampMs, minIntervalMs)) {
+            if (busy.get()) skippedWhileBusy++ else skippedByThrottle++
             imageProxy.close()
+            if (requestToken != 0L) {
+                onTerminal?.invoke(requestToken, sessionIdProvider(), false)
+            }
             return
         }
 
         if (!busy.compareAndSet(false, true)) {
             skippedWhileBusy++
             imageProxy.close()
+            if (requestToken != 0L) {
+                onTerminal?.invoke(requestToken, sessionIdProvider(), false)
+            }
             return
         }
 
         val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-        val frameTime = now
         val width = imageProxy.width
         val height = imageProxy.height
         val submitSessionId = sessionIdProvider()
+        val submissionMs = SystemClock.uptimeMillis()
+        val token = if (requestToken != 0L) requestToken else submissionMs
 
         val bitmapBuffer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
@@ -146,21 +180,11 @@ class FaceLandmarkerClient(
             imageProxy.close()
         }
 
-        val matrix = Matrix().apply {
-            postRotate(rotationDegrees.toFloat())
-        }
+        val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
         val rotatedBitmap = Bitmap.createBitmap(
-            bitmapBuffer,
-            0,
-            0,
-            bitmapBuffer.width,
-            bitmapBuffer.height,
-            matrix,
-            true,
+            bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height, matrix, true,
         )
-        if (rotatedBitmap !== bitmapBuffer) {
-            bitmapBuffer.recycle()
-        }
+        if (rotatedBitmap !== bitmapBuffer) bitmapBuffer.recycle()
 
         if (closed.get()) {
             rotatedBitmap.recycle()
@@ -168,16 +192,23 @@ class FaceLandmarkerClient(
             return
         }
 
-        inferenceStartedAtMs.set(SystemClock.uptimeMillis())
-        pendingSessionId.set(submitSessionId)
-        lastAcceptedTimestampMs.set(frameTime)
+        val request = FaceInferenceRequest(
+            requestToken = token,
+            sessionId = submitSessionId,
+            captureTimestampMs = captureTimestampMs,
+            submissionTimestampMs = submissionMs,
+        )
+        inFlight.set(request)
+        lastSubmittedCaptureMs.set(captureTimestampMs)
+        lastCaptureTimestampMs = captureTimestampMs
 
         val mpImage = BitmapImageBuilder(rotatedBitmap).build()
         try {
-            faceLandmarker?.detectAsync(mpImage, frameTime)
+            // MediaPipe timestamp must be the capture timestamp.
+            faceLandmarker?.detectAsync(mpImage, captureTimestampMs)
         } catch (error: Exception) {
             Log.e(TAG, "detectAsync failed", error)
-            busy.set(false)
+            releaseInFlight(success = false)
             if (!closed.get()) {
                 onError("Errore durante l'analisi del fotogramma del viso.")
             }
@@ -188,41 +219,58 @@ class FaceLandmarkerClient(
         if (!closed.compareAndSet(false, true)) return
         runCatching { faceLandmarker?.close() }
         faceLandmarker = null
+        val pending = inFlight.getAndSet(null)
         busy.set(false)
+        if (pending != null) {
+            onTerminal?.invoke(pending.requestToken, pending.sessionId, false)
+        }
     }
-
-    private val inferenceStartedAtMs = AtomicLong(0L)
-    private val pendingSessionId = AtomicLong(0L)
 
     private fun onLivestreamResult(
         result: FaceLandmarkerResult,
         input: com.google.mediapipe.framework.image.MPImage,
     ) {
-        val started = inferenceStartedAtMs.get()
-        if (started > 0L) {
-            lastInferenceDurationMs = SystemClock.uptimeMillis() - started
+        val callbackMs = SystemClock.uptimeMillis()
+        lastCallbackTimestampMs = callbackMs
+        val pending = inFlight.get()
+        if (pending == null) {
+            duplicateCallbackCount++
+            return
         }
-        busy.set(false)
-
         if (closed.get()) {
             staleCallbackCount++
+            releaseInFlight(success = false)
             return
         }
-        val expected = activeSessionId.get()
-        val pending = pendingSessionId.get()
-        if (expected != pending || expected != sessionIdProvider()) {
+        if (pending.sessionId != activeSessionId.get() ||
+            pending.sessionId != sessionIdProvider()
+        ) {
             staleCallbackCount++
+            // Do not clear current session busy via stale callback if tokens diverge.
+            if (inFlight.get()?.requestToken == pending.requestToken) {
+                releaseInFlight(success = false)
+            }
             return
         }
 
+        lastInferenceDurationMs = (callbackMs - pending.submissionTimestampMs).coerceAtLeast(0L)
         acceptedResults++
         val frame = FaceFrameMapper.map(
             result = result,
-            timestampMs = SystemClock.uptimeMillis(),
+            timestampMs = pending.captureTimestampMs,
             imageWidth = input.width,
             imageHeight = input.height,
         )
+        releaseInFlight(success = true)
         onResult(frame)
+    }
+
+    private fun releaseInFlight(success: Boolean) {
+        val pending = inFlight.getAndSet(null)
+        busy.set(false)
+        if (pending != null) {
+            onTerminal?.invoke(pending.requestToken, pending.sessionId, success)
+        }
     }
 
     companion object {

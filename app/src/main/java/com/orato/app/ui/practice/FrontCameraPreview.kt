@@ -25,6 +25,7 @@ import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.PoseLandmarkerClient
 import com.orato.app.pose.UpperBodyPoseFrame
 import com.orato.app.vision.VisualAnalysisCoordinator
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -34,8 +35,16 @@ private const val TAG = "FrontCameraPreview"
 /**
  * Single front-camera CameraX binding with mode-aware visual analysis.
  *
+ * ## Lifecycle / executor ownership
+ *
+ * The analysis [ExecutorService] is created inside [DisposableEffect] and shut down
+ * only in that effect's `onDispose`. It is **never** remembered across mode changes
+ * in a way that would reuse a terminated executor.
+ *
+ * Prefer deriving [visualAnalysisMode] synchronously from the selected [com.orato.app.domain.model.Scenario]
+ * before composing this preview so the first composition is not an incorrect BODY_ONLY bind.
+ *
  * Does not record, save, or upload frames.
- * Pose and Face share one ImageAnalysis use case (STRATEGY_KEEP_ONLY_LATEST).
  */
 @Composable
 fun FrontCameraPreview(
@@ -49,11 +58,11 @@ fun FrontCameraPreview(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val sessionId = remember { AtomicLong(System.nanoTime()) }
     val poseRef = remember { AtomicReference<PoseLandmarkerClient?>(null) }
     val faceRef = remember { AtomicReference<FaceLandmarkerClient?>(null) }
     val coordinatorRef = remember { AtomicReference<VisualAnalysisCoordinator?>(null) }
+    val executorRef = remember { AtomicReference<ExecutorService?>(null) }
     val previewView = remember {
         PreviewView(context).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -65,7 +74,12 @@ fun FrontCameraPreview(
         }
     }
 
+    // Mode is expected to be stable for the screen entry (derived from Scenario).
+    // Key on lifecycleOwner + mode so a mode change gets a fresh executor (never reuse after shutdown).
     DisposableEffect(lifecycleOwner, visualAnalysisMode) {
+        val cameraExecutor = Executors.newSingleThreadExecutor()
+        executorRef.set(cameraExecutor)
+
         val usesPose = VisualAnalysisMapping.usesPose(visualAnalysisMode)
         val usesFace = VisualAnalysisMapping.usesFace(visualAnalysisMode)
 
@@ -75,12 +89,14 @@ fun FrontCameraPreview(
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         val mainExecutor = ContextCompat.getMainExecutor(context)
         val sid = sessionId.incrementAndGet()
+        val coordinatorHolder = AtomicReference<VisualAnalysisCoordinator?>(null)
 
         val listener = Runnable {
             try {
                 val cameraProvider = cameraProviderFuture.get()
 
                 cameraExecutor.execute {
+                    lateinit var coordinator: VisualAnalysisCoordinator
                     val (pose, face) = VisualAnalysisCoordinator.createClients(
                         context = context,
                         mode = visualAnalysisMode,
@@ -92,6 +108,12 @@ fun FrontCameraPreview(
                         onFaceFrame = onFaceFrame,
                         onFaceError = { message ->
                             onFaceStatus(FaceDetectionStatus.Error(message))
+                        },
+                        onFaceTerminal = { token, session, success ->
+                            coordinatorHolder.get()?.onFaceTerminal(token, session, success)
+                        },
+                        onPoseTerminal = { token, session, success ->
+                            coordinatorHolder.get()?.onPoseTerminal(token, session, success)
                         },
                     )
                     poseRef.set(pose)
@@ -135,11 +157,13 @@ fun FrontCameraPreview(
                             val useCases = mutableListOf<androidx.camera.core.UseCase>(preview)
 
                             if (analysisNeeded) {
-                                val coordinator = VisualAnalysisCoordinator(
+                                coordinator = VisualAnalysisCoordinator(
                                     mode = visualAnalysisMode,
                                     poseClient = pose,
                                     faceClient = face,
+                                    sessionId = sid,
                                 )
+                                coordinatorHolder.set(coordinator)
                                 coordinatorRef.set(coordinator)
                                 onCoordinatorReady(coordinator, face, pose)
 
@@ -154,7 +178,6 @@ fun FrontCameraPreview(
                                 useCases += imageAnalysis
                             }
 
-                            // Bind camera exactly once for this session.
                             cameraProvider.unbindAll()
                             cameraProvider.bindToLifecycle(
                                 lifecycleOwner,
@@ -201,9 +224,11 @@ fun FrontCameraPreview(
                 ProcessCameraProvider.getInstance(context).get().unbindAll()
             }
             coordinatorRef.getAndSet(null)?.close()
+            coordinatorHolder.set(null)
             poseRef.getAndSet(null)?.close()
             faceRef.getAndSet(null)?.close()
-            cameraExecutor.shutdown()
+            // Shut down the executor owned by THIS effect only — never reuse after shutdown.
+            executorRef.getAndSet(null)?.shutdown()
         }
     }
 
@@ -211,4 +236,15 @@ fun FrontCameraPreview(
         factory = { previewView },
         modifier = modifier,
     )
+}
+
+/**
+ * Pure helper for lifecycle tests: an executor must not be reused after shutdown.
+ */
+object CameraExecutorLifecycle {
+    fun assertNotShutdown(executor: ExecutorService) {
+        check(!executor.isShutdown) {
+            "Camera analysis executor was shut down and must not be reused"
+        }
+    }
 }

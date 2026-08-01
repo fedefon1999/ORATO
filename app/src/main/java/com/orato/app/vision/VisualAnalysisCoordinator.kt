@@ -15,176 +15,144 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Shared CameraX frame router for scenario visual analysis modes.
+ * Shared CameraX frame router.
  *
- * BODY_ONLY  → Pose only
- * FACE_ONLY  → Face only
- * BODY_AND_FACE → both, with independent timestamp throttling and busy guards
+ * One ImageAnalysis stream, STRATEGY_KEEP_ONLY_LATEST, no frame queues.
+ * Routes each CameraX frame to **at most one** MediaPipe analyzer (no concurrent
+ * ImageProxy ownership). Fair BODY_AND_FACE selection via [VisualFrameScheduler].
  *
- * Uses STRATEGY_KEEP_ONLY_LATEST at the ImageAnalysis level; this coordinator
- * never queues frames.
+ * ImageProxy is closed exactly once — either by the selected client or here when NONE.
  */
 class VisualAnalysisCoordinator(
     private val mode: VisualAnalysisMode,
     private val poseClient: PoseLandmarkerClient?,
     private val faceClient: FaceLandmarkerClient?,
-    private val onPoseFrame: ((UpperBodyPoseFrame) -> Unit)? = null,
-    private val onFaceFrame: ((FaceFrame) -> Unit)? = null,
-    private val onCameraFrame: (() -> Unit)? = null,
-    private val poseMinIntervalMs: Long = FaceMetricsConfig.POSE_MIN_INTERVAL_MS,
+    private val sessionId: Long,
+    private val scheduler: VisualFrameScheduler = VisualFrameScheduler(mode),
+    private val onCameraFrame: ((captureTimestampMs: Long) -> Unit)? = null,
     private val faceMinIntervalMs: Long = FaceMetricsConfig.FACE_MIN_INTERVAL_MS,
+    private val poseMinIntervalMs: Long = FaceMetricsConfig.POSE_MIN_INTERVAL_MS,
 ) : ImageAnalysis.Analyzer {
 
     private val closed = AtomicBoolean(false)
-    private val poseBusy = AtomicBoolean(false)
-    private val lastPoseAcceptedMs = AtomicLong(0L)
+    private val cameraFrames = AtomicLong(0L)
+    private var windowStartMs = 0L
+    private var framesInWindow = 0
+    private var faceCompletedInWindow = 0
+    private var poseCompletedInWindow = 0
 
-    @Volatile
-    var poseSkippedBusy: Long = 0L
-        private set
+    @Volatile var cameraInputFps: Float = 0f; private set
+    @Volatile var faceCompletedFps: Float = 0f; private set
+    @Volatile var poseCompletedFps: Float = 0f; private set
+    @Volatile var droppedOrSkippedTotal: Long = 0L; private set
 
-    @Volatile
-    var poseSkippedThrottle: Long = 0L
-        private set
+    val diagnosticsScheduler: VisualFrameScheduler get() = scheduler
 
-    @Volatile
-    var poseInferenceMs: Long = 0L
-        private set
+    init {
+        scheduler.beginSession(sessionId)
+    }
 
-    @Volatile
-    var droppedOrSkippedTotal: Long = 0L
-        private set
-
-    val isPoseBusy: Boolean
-        get() = poseBusy.get()
+    val isPoseBusy: Boolean get() = poseClient?.isBusy == true || scheduler.isPoseInFlight
+    val isFaceBusy: Boolean get() = faceClient?.isBusy == true || scheduler.isFaceInFlight
 
     override fun analyze(imageProxy: ImageProxy) {
         if (closed.get()) {
             imageProxy.close()
             return
         }
-        onCameraFrame?.invoke()
+        val captureTs = SystemClock.uptimeMillis()
+        cameraFrames.incrementAndGet()
+        rollFps(captureTs)
+        onCameraFrame?.invoke(captureTs)
 
-        when (mode) {
-            VisualAnalysisMode.BODY_ONLY -> routePoseOnly(imageProxy)
-            VisualAnalysisMode.FACE_ONLY -> routeFaceOnly(imageProxy)
-            VisualAnalysisMode.BODY_AND_FACE -> routeBoth(imageProxy)
-        }
-    }
+        val faceAvailable = faceClient?.isReady == true
+        val poseAvailable = poseClient?.isReady == true
 
-    fun close() {
-        closed.set(true)
-    }
+        val (selected, token) = scheduler.select(
+            timestampMs = captureTs,
+            faceAvailable = faceAvailable,
+            poseAvailable = poseAvailable,
+            sessionId = sessionId,
+        )
 
-    private fun routePoseOnly(imageProxy: ImageProxy) {
-        val client = poseClient
-        if (client == null || !client.isReady) {
-            droppedOrSkippedTotal++
-            imageProxy.close()
-            return
-        }
-        if (!acceptPoseSlot()) {
-            imageProxy.close()
-            return
-        }
-        val started = SystemClock.uptimeMillis()
-        try {
-            client.detectLiveStream(imageProxy)
-        } finally {
-            poseInferenceMs = SystemClock.uptimeMillis() - started
-            poseBusy.set(false)
-        }
-    }
-
-    private fun routeFaceOnly(imageProxy: ImageProxy) {
-        val client = faceClient
-        if (client == null || !client.isReady) {
-            droppedOrSkippedTotal++
-            imageProxy.close()
-            return
-        }
-        client.detectLiveStream(imageProxy, faceMinIntervalMs)
-    }
-
-    /**
-     * Alternating eligibility: each analyzer independently decides via throttle + busy.
-     * Pose consumes a copied path only when eligible; Face gets the ImageProxy when Pose skips,
-     * otherwise Pose runs on the proxy (Face skips that frame — KEEP_ONLY_LATEST + independent rates).
-     *
-     * For BODY_AND_FACE we prefer Face when both are eligible because iris benefits from
-     * slightly higher rate; Pose runs on the next eligible frame it can claim.
-     */
-    private fun routeBoth(imageProxy: ImageProxy) {
-        val face = faceClient
-        val pose = poseClient
-        val faceReady = face != null && face.isReady
-        val poseReady = pose != null && pose.isReady
-
-        if (!faceReady && !poseReady) {
-            droppedOrSkippedTotal++
-            imageProxy.close()
-            return
-        }
-
-        val now = SystemClock.uptimeMillis()
-        val faceEligible = faceReady && face!!.canAcceptFrame(now, faceMinIntervalMs) && !face.isBusy
-        val poseEligible = poseReady && canAcceptPose(now) && !poseBusy.get()
-
-        when {
-            faceEligible && !poseEligible -> {
-                face.detectLiveStream(imageProxy, faceMinIntervalMs)
+        when (selected) {
+            SelectedVisualAnalyzer.FACE -> {
+                val client = faceClient
+                if (client == null) {
+                    scheduler.onFaceError(token, sessionId)
+                    droppedOrSkippedTotal++
+                    imageProxy.close()
+                    return
+                }
+                client.detectLiveStream(
+                    imageProxy = imageProxy,
+                    minIntervalMs = faceMinIntervalMs,
+                    requestToken = token,
+                    captureTimestampMs = captureTs,
+                )
             }
-            poseEligible && !faceEligible -> {
-                runPose(imageProxy)
+            SelectedVisualAnalyzer.POSE -> {
+                val client = poseClient
+                if (client == null) {
+                    scheduler.onPoseError(token, sessionId)
+                    droppedOrSkippedTotal++
+                    imageProxy.close()
+                    return
+                }
+                client.detectLiveStream(
+                    imageProxy = imageProxy,
+                    minIntervalMs = poseMinIntervalMs,
+                    requestToken = token,
+                    captureTimestampMs = captureTs,
+                )
             }
-            faceEligible && poseEligible -> {
-                // Face first this frame; pose will take a subsequent frame.
-                face.detectLiveStream(imageProxy, faceMinIntervalMs)
-            }
-            else -> {
+            SelectedVisualAnalyzer.NONE -> {
                 droppedOrSkippedTotal++
                 imageProxy.close()
             }
         }
     }
 
-    private fun runPose(imageProxy: ImageProxy) {
-        val client = poseClient ?: run {
-            imageProxy.close()
-            return
-        }
-        if (!acceptPoseSlot()) {
-            imageProxy.close()
-            return
-        }
-        val started = SystemClock.uptimeMillis()
-        try {
-            client.detectLiveStream(imageProxy)
-        } finally {
-            poseInferenceMs = SystemClock.uptimeMillis() - started
-            poseBusy.set(false)
+    fun onFaceTerminal(requestToken: Long, sid: Long, success: Boolean) {
+        if (success) {
+            faceCompletedInWindow++
+            scheduler.onFaceCompleted(requestToken, sid)
+        } else {
+            scheduler.onFaceError(requestToken, sid)
         }
     }
 
-    private fun acceptPoseSlot(): Boolean {
-        val now = SystemClock.uptimeMillis()
-        if (!canAcceptPose(now)) {
-            poseSkippedThrottle++
-            droppedOrSkippedTotal++
-            return false
+    fun onPoseTerminal(requestToken: Long, sid: Long, success: Boolean) {
+        if (success) {
+            poseCompletedInWindow++
+            scheduler.onPoseCompleted(requestToken, sid)
+        } else {
+            scheduler.onPoseError(requestToken, sid)
         }
-        if (!poseBusy.compareAndSet(false, true)) {
-            poseSkippedBusy++
-            droppedOrSkippedTotal++
-            return false
-        }
-        lastPoseAcceptedMs.set(now)
-        return true
     }
 
-    private fun canAcceptPose(now: Long): Boolean {
-        val last = lastPoseAcceptedMs.get()
-        return last == 0L || now - last >= poseMinIntervalMs
+    fun close() {
+        closed.set(true)
+        scheduler.close()
+    }
+
+    private fun rollFps(nowMs: Long) {
+        if (windowStartMs == 0L) {
+            windowStartMs = nowMs
+            return
+        }
+        framesInWindow++
+        val elapsed = nowMs - windowStartMs
+        if (elapsed >= 1_000L) {
+            val seconds = elapsed / 1000f
+            cameraInputFps = framesInWindow / seconds
+            faceCompletedFps = faceCompletedInWindow / seconds
+            poseCompletedFps = poseCompletedInWindow / seconds
+            framesInWindow = 0
+            faceCompletedInWindow = 0
+            poseCompletedInWindow = 0
+            windowStartMs = nowMs
+        }
     }
 
     companion object {
@@ -198,6 +166,8 @@ class VisualAnalysisCoordinator(
             onPoseError: (String) -> Unit,
             onFaceFrame: (FaceFrame) -> Unit,
             onFaceError: (String) -> Unit,
+            onFaceTerminal: (Long, Long, Boolean) -> Unit = { _, _, _ -> },
+            onPoseTerminal: (Long, Long, Boolean) -> Unit = { _, _, _ -> },
         ): Pair<PoseLandmarkerClient?, FaceLandmarkerClient?> {
             val pose = if (mode == VisualAnalysisMode.BODY_ONLY || mode == VisualAnalysisMode.BODY_AND_FACE) {
                 PoseLandmarkerClient(
@@ -205,6 +175,7 @@ class VisualAnalysisCoordinator(
                     onResult = onPoseFrame,
                     onError = onPoseError,
                     sessionIdProvider = { sessionId },
+                    onTerminal = onPoseTerminal,
                 ).also { it.initialize(); it.beginSession(sessionId) }
             } else {
                 null
@@ -215,6 +186,7 @@ class VisualAnalysisCoordinator(
                     onResult = onFaceFrame,
                     onError = onFaceError,
                     sessionIdProvider = { sessionId },
+                    onTerminal = onFaceTerminal,
                 ).also { it.initialize(); it.beginSession(sessionId) }
             } else {
                 null
@@ -223,12 +195,4 @@ class VisualAnalysisCoordinator(
             return pose to face
         }
     }
-}
-
-/**
- * Peek whether Face client would accept without consuming a frame.
- */
-internal fun FaceLandmarkerClient.canAcceptFrame(nowMs: Long, minIntervalMs: Long): Boolean {
-    // Approximate: if busy, no; throttle uses lastAccepted inside detectLiveStream.
-    return !isBusy
 }

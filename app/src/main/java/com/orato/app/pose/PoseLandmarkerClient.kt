@@ -12,37 +12,62 @@ import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
+import com.orato.app.face.FaceMetricsConfig
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+data class PoseInferenceRequest(
+    val requestToken: Long,
+    val sessionId: Long,
+    val captureTimestampMs: Long,
+    val submissionTimestampMs: Long,
+)
 
 /**
  * MediaPipe Pose Landmarker wrapper for LIVE_STREAM camera frames.
  *
- * Create and [close] off the main thread when using CPU (same executor as ImageAnalysis).
- * Stale results after [close] are ignored.
+ * Busy remains true from successful submit until the matching result/error/close.
+ * Frame [UpperBodyPoseFrame.timestampMs] is the capture timestamp submitted to MediaPipe.
  */
 class PoseLandmarkerClient(
     context: Context,
     private val onResult: (UpperBodyPoseFrame) -> Unit,
     private val onError: (String) -> Unit,
     private val sessionIdProvider: () -> Long = { 0L },
+    private val onTerminal: ((requestToken: Long, sessionId: Long, success: Boolean) -> Unit)? = null,
 ) {
     private val appContext = context.applicationContext
     private val closed = AtomicBoolean(false)
-    private val activeSessionId = java.util.concurrent.atomic.AtomicLong(0L)
-    private val pendingSessionId = java.util.concurrent.atomic.AtomicLong(0L)
-
-    @Volatile
-    var staleCallbackCount: Long = 0L
-        private set
-
+    private val busy = AtomicBoolean(false)
+    private val lastSubmittedCaptureMs = AtomicLong(0L)
+    private val activeSessionId = AtomicLong(0L)
+    private val inFlight = AtomicReference<PoseInferenceRequest?>(null)
     private var poseLandmarker: PoseLandmarker? = null
+
+    @Volatile var skippedWhileBusy: Long = 0L; private set
+    @Volatile var skippedByThrottle: Long = 0L; private set
+    @Volatile var staleCallbackCount: Long = 0L; private set
+    @Volatile var duplicateCallbackCount: Long = 0L; private set
+    @Volatile var lastInferenceDurationMs: Long = 0L; private set
+    @Volatile var acceptedResults: Long = 0L; private set
 
     val isReady: Boolean
         get() = poseLandmarker != null && !closed.get()
 
+    val isBusy: Boolean
+        get() = busy.get()
+
     fun beginSession(sessionId: Long) {
         activeSessionId.set(sessionId)
         staleCallbackCount = 0L
+        skippedWhileBusy = 0L
+        skippedByThrottle = 0L
+        duplicateCallbackCount = 0L
+        acceptedResults = 0L
+        lastSubmittedCaptureMs.set(0L)
+        inFlight.set(null)
+        busy.set(false)
     }
 
     fun initialize() {
@@ -63,6 +88,7 @@ class PoseLandmarkerClient(
                 .setMinPosePresenceConfidence(DEFAULT_CONFIDENCE)
                 .setResultListener(::onLivestreamResult)
                 .setErrorListener { error ->
+                    releaseInFlight(success = false)
                     if (!closed.get()) {
                         onError(error.message ?: "Errore durante il rilevamento della posa.")
                     }
@@ -82,21 +108,61 @@ class PoseLandmarkerClient(
         }
     }
 
+    fun canAcceptFrame(
+        captureTimestampMs: Long,
+        minIntervalMs: Long = FaceMetricsConfig.POSE_MIN_INTERVAL_MS,
+        sessionId: Long = sessionIdProvider(),
+    ): Boolean {
+        if (closed.get() || poseLandmarker == null) return false
+        if (sessionId != activeSessionId.get()) return false
+        if (busy.get()) return false
+        val last = lastSubmittedCaptureMs.get()
+        if (last > 0L) {
+            if (captureTimestampMs == last) return false
+            if (captureTimestampMs < last) return false
+            if (captureTimestampMs - last < minIntervalMs) return false
+        }
+        return true
+    }
+
     /**
      * Consumes [imageProxy] exactly once (always closed).
-     * Rotates the frame to upright orientation before inference.
-     * Front-camera mirroring is applied in [PoseOverlayMapper], not here.
      */
-    fun detectLiveStream(imageProxy: ImageProxy) {
+    fun detectLiveStream(
+        imageProxy: ImageProxy,
+        minIntervalMs: Long = FaceMetricsConfig.POSE_MIN_INTERVAL_MS,
+        requestToken: Long = 0L,
+        captureTimestampMs: Long = SystemClock.uptimeMillis(),
+    ) {
         if (closed.get() || poseLandmarker == null) {
             imageProxy.close()
             return
         }
 
+        if (!canAcceptFrame(captureTimestampMs, minIntervalMs)) {
+            if (busy.get()) skippedWhileBusy++ else skippedByThrottle++
+            imageProxy.close()
+            if (requestToken != 0L) {
+                onTerminal?.invoke(requestToken, sessionIdProvider(), false)
+            }
+            return
+        }
+
+        if (!busy.compareAndSet(false, true)) {
+            skippedWhileBusy++
+            imageProxy.close()
+            if (requestToken != 0L) {
+                onTerminal?.invoke(requestToken, sessionIdProvider(), false)
+            }
+            return
+        }
+
         val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-        val frameTime = SystemClock.uptimeMillis()
         val width = imageProxy.width
         val height = imageProxy.height
+        val submitSessionId = sessionIdProvider()
+        val submissionMs = SystemClock.uptimeMillis()
+        val token = if (requestToken != 0L) requestToken else submissionMs
 
         val bitmapBuffer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
@@ -105,33 +171,33 @@ class PoseLandmarkerClient(
             imageProxy.close()
         }
 
-        val matrix = Matrix().apply {
-            postRotate(rotationDegrees.toFloat())
-        }
+        val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
         val rotatedBitmap = Bitmap.createBitmap(
-            bitmapBuffer,
-            0,
-            0,
-            bitmapBuffer.width,
-            bitmapBuffer.height,
-            matrix,
-            true,
+            bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height, matrix, true,
         )
-        if (rotatedBitmap !== bitmapBuffer) {
-            bitmapBuffer.recycle()
-        }
+        if (rotatedBitmap !== bitmapBuffer) bitmapBuffer.recycle()
 
         if (closed.get()) {
             rotatedBitmap.recycle()
+            busy.set(false)
             return
         }
 
-        pendingSessionId.set(sessionIdProvider())
+        val request = PoseInferenceRequest(
+            requestToken = token,
+            sessionId = submitSessionId,
+            captureTimestampMs = captureTimestampMs,
+            submissionTimestampMs = submissionMs,
+        )
+        inFlight.set(request)
+        lastSubmittedCaptureMs.set(captureTimestampMs)
+
         val mpImage = BitmapImageBuilder(rotatedBitmap).build()
         try {
-            poseLandmarker?.detectAsync(mpImage, frameTime)
+            poseLandmarker?.detectAsync(mpImage, captureTimestampMs)
         } catch (error: Exception) {
             Log.e(TAG, "detectAsync failed", error)
+            releaseInFlight(success = false)
             if (!closed.get()) {
                 onError("Errore durante l'analisi del fotogramma.")
             }
@@ -142,52 +208,79 @@ class PoseLandmarkerClient(
         if (!closed.compareAndSet(false, true)) return
         runCatching { poseLandmarker?.close() }
         poseLandmarker = null
+        val pending = inFlight.getAndSet(null)
+        busy.set(false)
+        if (pending != null) {
+            onTerminal?.invoke(pending.requestToken, pending.sessionId, false)
+        }
     }
 
-    private fun onLivestreamResult(result: PoseLandmarkerResult, input: com.google.mediapipe.framework.image.MPImage) {
+    private fun onLivestreamResult(
+        result: PoseLandmarkerResult,
+        input: com.google.mediapipe.framework.image.MPImage,
+    ) {
+        val callbackMs = SystemClock.uptimeMillis()
+        val pending = inFlight.get()
+        if (pending == null) {
+            duplicateCallbackCount++
+            return
+        }
         if (closed.get()) {
             staleCallbackCount++
+            releaseInFlight(success = false)
             return
         }
-        val expected = activeSessionId.get()
-        val pending = pendingSessionId.get()
-        if (expected != pending || expected != sessionIdProvider()) {
+        if (pending.sessionId != activeSessionId.get() ||
+            pending.sessionId != sessionIdProvider()
+        ) {
             staleCallbackCount++
+            if (inFlight.get()?.requestToken == pending.requestToken) {
+                releaseInFlight(success = false)
+            }
             return
         }
+
+        lastInferenceDurationMs = (callbackMs - pending.submissionTimestampMs).coerceAtLeast(0L)
+        acceptedResults++
+        val captureTs = pending.captureTimestampMs
 
         val poseLandmarks = result.landmarks().firstOrNull()
-        if (poseLandmarks == null) {
-            onResult(
-                UpperBodyPoseFrame(
-                    landmarks = emptyMap(),
-                    imageWidth = input.width,
-                    imageHeight = input.height,
-                ),
+        val frame = if (poseLandmarks == null) {
+            UpperBodyPoseFrame(
+                landmarks = emptyMap(),
+                imageWidth = input.width,
+                imageHeight = input.height,
+                timestampMs = captureTs,
             )
-            return
-        }
-
-        val mapped = PoseLandmarkId.entries.mapNotNull { id ->
-            val landmark = poseLandmarks.getOrNull(id.mediapipeIndex) ?: return@mapNotNull null
-            val presenceOpt = landmark.presence()
-            id to NormalizedLandmarkPoint(
-                id = id,
-                x = landmark.x(),
-                y = landmark.y(),
-                visibility = landmark.visibility().orElse(0f),
-                // Only attach presence when MediaPipe provides it — never invent 0.
-                presence = if (presenceOpt.isPresent) presenceOpt.get() else null,
-            )
-        }.toMap()
-
-        onResult(
+        } else {
+            val mapped = PoseLandmarkId.entries.mapNotNull { id ->
+                val landmark = poseLandmarks.getOrNull(id.mediapipeIndex) ?: return@mapNotNull null
+                val presenceOpt = landmark.presence()
+                id to NormalizedLandmarkPoint(
+                    id = id,
+                    x = landmark.x(),
+                    y = landmark.y(),
+                    visibility = landmark.visibility().orElse(0f),
+                    presence = if (presenceOpt.isPresent) presenceOpt.get() else null,
+                )
+            }.toMap()
             UpperBodyPoseFrame(
                 landmarks = mapped,
                 imageWidth = input.width,
                 imageHeight = input.height,
-            ),
-        )
+                timestampMs = captureTs,
+            )
+        }
+        releaseInFlight(success = true)
+        onResult(frame)
+    }
+
+    private fun releaseInFlight(success: Boolean) {
+        val pending = inFlight.getAndSet(null)
+        busy.set(false)
+        if (pending != null) {
+            onTerminal?.invoke(pending.requestToken, pending.sessionId, success)
+        }
     }
 
     companion object {
