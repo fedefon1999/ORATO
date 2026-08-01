@@ -93,7 +93,8 @@ class AudioSessionAccumulator(
         qualifiedSpeechSegments().size
 
     fun finalizedInternalPauseCount(): Int =
-        computeInternalPauses(qualifiedSpeechSegments()).buckets.rawCount
+        EffectiveSpeakingBlocks.build(qualifiedSpeechSegments())
+            .significantPauseDurationsMs.size
 
     fun liveSnapshot(
         state: AudioRecordingState,
@@ -170,6 +171,8 @@ class AudioSessionAccumulator(
                 inputQuality = AudioInputQuality.RECORDING_ERROR,
                 capturedDurationMs = capturedDurationMs(),
                 speechDurationMs = null,
+                rawVoicedDurationMs = null,
+                briefGapsMergedMs = null,
                 longestSpeechSegmentMs = null,
                 droppedReadCount = droppedReads,
                 sampleRateHz = sampleRateHz,
@@ -196,15 +199,23 @@ class AudioSessionAccumulator(
         }
 
         val speechSegments = qualifiedSpeechSegments()
-        val speechMs = speechSegments.sumOf { it.durationMs }
-        val longestSpeech = speechSegments.maxOfOrNull { it.durationMs }
-        // Speech ratio from actual speech duration on the timeline — never raw capture.
+        val timeline = EffectiveSpeakingBlocks.build(
+            qualifiedSpeechSegments = speechSegments,
+            mediumPauseThresholdMs = config.MEDIUM_PAUSE_THRESHOLD_MS,
+        )
+        val effectiveMs = timeline.effectiveSpeechDurationMs
+        val rawVoiced = timeline.rawVoicedDurationMs
+        val longestSpeech = timeline.longestContinuousSpeechMs
+        // User-facing speaking ratio uses effective blocks — never raw capture alone.
         val speechRatio = if (durationMs > 0L) {
-            speechMs.toDouble() / durationMs.toDouble()
+            effectiveMs.toDouble() / durationMs.toDouble()
         } else {
             0.0
         }
-        val pauses = computeInternalPauses(speechSegments)
+        val pauses = PauseBuckets.fromDurations(timeline.significantPauseDurationsMs)
+        val pauseMedian = pauses.rawPauseDurationsMs.takeIf { it.isNotEmpty() }
+            ?.let { PcmMath.medianLong(it) }
+        val pauseLongest = pauses.rawPauseDurationsMs.maxOrNull()
 
         val meanSpeech = when {
             speechDbfsLevels.isEmpty() || speechSegments.isEmpty() -> null
@@ -235,7 +246,9 @@ class AudioSessionAccumulator(
                 state = state,
                 inputQuality = AudioInputQuality.INSUFFICIENT_AUDIO,
                 capturedDurationMs = durationMs,
-                speechDurationMs = speechMs.takeIf { speechSegments.isNotEmpty() },
+                speechDurationMs = effectiveMs.takeIf { speechSegments.isNotEmpty() },
+                rawVoicedDurationMs = rawVoiced.takeIf { speechSegments.isNotEmpty() },
+                briefGapsMergedMs = timeline.briefGapsMergedMs.takeIf { speechSegments.isNotEmpty() },
                 longestSpeechSegmentMs = longestSpeech.takeIf { speechSegments.isNotEmpty() },
                 droppedReadCount = droppedReads,
                 sampleRateHz = sampleRateHz,
@@ -258,7 +271,9 @@ class AudioSessionAccumulator(
             state = state,
             inputQuality = quality,
             capturedDurationMs = durationMs,
-            speechDurationMs = speechMs,
+            speechDurationMs = effectiveMs,
+            rawVoicedDurationMs = rawVoiced,
+            briefGapsMergedMs = timeline.briefGapsMergedMs,
             longestSpeechSegmentMs = longestSpeech,
             droppedReadCount = droppedReads,
             sampleRateHz = sampleRateHz,
@@ -267,11 +282,11 @@ class AudioSessionAccumulator(
             meanSpeechDbfs = meanSpeech,
             volumeVariationStdDevDb = variation,
             clippingPercent = clippingPct,
-            approximatePauseCount = pauses.buckets.rawCount,
-            medianPauseDurationMs = pauses.medianMs,
-            longestPauseDurationMs = pauses.longestMs,
-            pausesOver1500Ms = pauses.buckets.longCount,
-            pauseBuckets = pauses.buckets,
+            approximatePauseCount = pauses.rawCount,
+            medianPauseDurationMs = pauseMedian,
+            longestPauseDurationMs = pauseLongest,
+            pausesOver1500Ms = pauses.longCount,
+            pauseBuckets = pauses,
             errorMessage = errorMessage,
             insufficientData = false,
         )

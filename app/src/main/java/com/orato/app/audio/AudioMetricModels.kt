@@ -60,12 +60,23 @@ data class AudioSessionMetrics(
     /** Actual successfully captured duration in milliseconds. */
     val capturedDurationMs: Long,
     /**
-     * Finalized VAD speech duration in milliseconds (qualified speech segments).
+     * Finalized user-facing effective speaking duration (ms).
+     * Merges brief gaps below [AudioMetricsConfig.MEDIUM_PAUSE_THRESHOLD_MS].
      * Never equal to [capturedDurationMs]; null when insufficient / error.
      */
     val speechDurationMs: Long? = null,
     /**
-     * Longest finalized qualified speech segment duration (ms).
+     * Sum of raw VAD-qualified speech frames only (excludes all silence).
+     * Debug / diagnostics — not shown in the normal report.
+     */
+    val rawVoicedDurationMs: Long? = null,
+    /**
+     * Duration of brief gaps (&lt; medium threshold) merged into speaking blocks.
+     * Debug only.
+     */
+    val briefGapsMergedMs: Long? = null,
+    /**
+     * Longest effective speaking block duration (ms).
      * Null when insufficient / error.
      */
     val longestSpeechSegmentMs: Long? = null,
@@ -117,6 +128,8 @@ data class AudioSessionMetrics(
                 inputQuality = AudioInputQuality.INSUFFICIENT_AUDIO,
                 capturedDurationMs = 0L,
                 speechDurationMs = null,
+                rawVoicedDurationMs = null,
+                briefGapsMergedMs = null,
                 longestSpeechSegmentMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
@@ -140,6 +153,8 @@ data class AudioSessionMetrics(
                 inputQuality = AudioInputQuality.RECORDING_ERROR,
                 capturedDurationMs = 0L,
                 speechDurationMs = null,
+                rawVoicedDurationMs = null,
+                briefGapsMergedMs = null,
                 longestSpeechSegmentMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,

@@ -147,10 +147,12 @@ private fun VoiceSectionCard(report: CompletedSessionReport) {
         MetricItem(
             label = "Percentuale di parlato",
             formattedValue = FinalReportPresentation.formatPercent(voice.speechRatioPercent),
+            explanation = "Calcolata sui blocchi di parlato, unendo le pause inferiori a 0,5 secondi.",
         )
         MetricItem(
             label = "Tempo effettivo di parlato",
             formattedValue = FinalReportPresentation.formatDuration(voice.effectiveSpeechDurationMs),
+            explanation = "Include le brevi pause naturali e si interrompe quando inizia una pausa significativa.",
         )
         MetricItem(
             label = "Volume medio",
@@ -185,6 +187,22 @@ private fun RhythmSectionCard(report: CompletedSessionReport) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            val recovery = when (rhythm.linguisticUnavailableReason) {
+                com.orato.app.speech.LinguisticUnavailableReason.MODEL_NOT_DOWNLOADED,
+                com.orato.app.speech.LinguisticUnavailableReason.MODEL_INVALID,
+                com.orato.app.speech.LinguisticUnavailableReason.MODEL_CHECKSUM_FAILED,
+                -> com.orato.app.speech.SpeechConfig.PREPARE_MODEL_ACTION
+                null -> null
+                else -> com.orato.app.speech.SpeechConfig.RETRY_SESSION_ACTION
+            }
+            if (recovery != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = recovery,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Spacer(modifier = Modifier.height(8.dp))
         }
         PauseMetrics(rhythm)
