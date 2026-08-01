@@ -152,7 +152,7 @@ class ReportPreparationCoordinatorTest {
         assertTrue(ready.report.rhythmAndFluency.discourseMarkers!!.totalCount >= 2)
         assertFalse(ReportSection.RHYTHM_AND_FLUENCY in ready.report.unavailableSections)
         assertEquals(-20.0, ready.report.voice.meanSpeechDbfs!!, 1e-9)
-        assertTrue(ready.report.body.session.hasInsufficientData)
+        assertTrue(ready.report.body!!.session.hasInsufficientData)
         assertNull(c.lastLinguisticDiagnostics?.reason)
     }
 
@@ -182,7 +182,7 @@ class ReportPreparationCoordinatorTest {
         assertEquals(audioMetrics.meanSpeechDbfs, ready.report.voice.meanSpeechDbfs)
         assertEquals(audioMetrics.speechDurationMs, ready.report.voice.speechSpanDurationMs)
         assertFalse(ready.report.voice.insufficientData)
-        assertEquals(body.hasInsufficientData, ready.report.body.session.hasInsufficientData)
+        assertEquals(body.hasInsufficientData, ready.report.body!!.session.hasInsufficientData)
         assertEquals(LinguisticUnavailableReason.INFERENCE_FAILED, c.lastLinguisticDiagnostics?.reason)
     }
 

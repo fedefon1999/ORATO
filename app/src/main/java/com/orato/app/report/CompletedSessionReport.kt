@@ -2,6 +2,14 @@ package com.orato.app.report
 
 import com.orato.app.audio.AudioInputQuality
 import com.orato.app.audio.AudioSessionMetrics
+import com.orato.app.domain.model.Scenario
+import com.orato.app.domain.model.VisualAnalysisMode
+import com.orato.app.domain.model.VisualAnalysisMapping
+import com.orato.app.face.CameraGazeReportData
+import com.orato.app.face.EyeClosureReportData
+import com.orato.app.face.FaceFramingReportData
+import com.orato.app.face.HeadMovementReportData
+import com.orato.app.face.SessionFaceReport
 import com.orato.app.metrics.SessionBodyReport
 import com.orato.app.speech.DiscourseMarkerMetrics
 import com.orato.app.speech.SpeechConfig
@@ -10,6 +18,10 @@ import com.orato.app.speech.SpeechMetricsCalculator
 
 enum class ReportSection {
     BODY,
+    FACE_PRESENCE,
+    GAZE,
+    HEAD_MOVEMENT,
+    EYE_CLOSURE,
     VOICE,
     RHYTHM_AND_FLUENCY,
 }
@@ -65,15 +77,23 @@ data class RhythmAndFluencyReportData(
 /**
  * Immutable terminal session report. Built once after all components reach a terminal state.
  * Must not be mutated after navigation to FinalReportScreen.
+ *
+ * Unavailable visual sections are null — never fake zeros.
  */
 data class CompletedSessionReport(
     val sessionId: String,
+    val scenario: Scenario? = null,
     val scenarioName: String,
+    val visualAnalysisMode: VisualAnalysisMode,
     val completedAtEpochMs: Long,
     val totalSessionDurationMs: Long,
     /** Discourse span: first speech onset → last speech offset. */
     val speechSpanDurationMs: Long?,
-    val body: BodyReportData,
+    val body: BodyReportData?,
+    val facePresence: FaceFramingReportData?,
+    val gaze: CameraGazeReportData?,
+    val headMovement: HeadMovementReportData?,
+    val eyeClosure: EyeClosureReportData?,
     val voice: VoiceReportData,
     val rhythmAndFluency: RhythmAndFluencyReportData,
     val unavailableSections: Set<ReportSection>,
@@ -90,11 +110,17 @@ object CompletedSessionReportFactory {
         scenarioName: String,
         completedAtEpochMs: Long,
         totalSessionDurationMs: Long,
-        body: SessionBodyReport,
+        body: SessionBodyReport?,
         audio: AudioSessionMetrics,
         linguistic: SpeechIntelligenceMetrics?,
         linguisticUnavailableMessage: String? = null,
         linguisticUnavailableReason: com.orato.app.speech.LinguisticUnavailableReason? = null,
+        scenario: Scenario? = null,
+        visualAnalysisMode: VisualAnalysisMode = scenario?.let { VisualAnalysisMapping.modeFor(it) }
+            ?: VisualAnalysisMode.BODY_ONLY,
+        face: SessionFaceReport? = null,
+        bodyFailed: Boolean = false,
+        faceFailed: Boolean = false,
     ): CompletedSessionReport {
         val spanMs = audio.speechSpanDurationMs ?: audio.speechDurationMs
         val qualityOk = SpeechMetricsCalculator.isAudioQualityValidForWpm(audio)
@@ -152,18 +178,41 @@ object CompletedSessionReportFactory {
             )
         }
 
+        val includeBody = VisualAnalysisMapping.usesPose(visualAnalysisMode)
+        val includeFace = VisualAnalysisMapping.usesFace(visualAnalysisMode)
+
+        val bodyData = if (includeBody && body != null && !bodyFailed) {
+            BodyReportData(body)
+        } else {
+            null
+        }
+
+        val faceData = if (includeFace && face != null && !faceFailed) face else null
+
         val unavailable = buildSet {
             if (voiceInsufficient) add(ReportSection.VOICE)
             if (linguistic == null) add(ReportSection.RHYTHM_AND_FLUENCY)
+            if (includeBody && (bodyFailed || body == null)) add(ReportSection.BODY)
+            if (includeFace && (faceFailed || face == null)) {
+                add(ReportSection.FACE_PRESENCE)
+                add(ReportSection.GAZE)
+                add(ReportSection.HEAD_MOVEMENT)
+            }
         }
 
         return CompletedSessionReport(
             sessionId = sessionId,
+            scenario = scenario,
             scenarioName = scenarioName,
+            visualAnalysisMode = visualAnalysisMode,
             completedAtEpochMs = completedAtEpochMs,
             totalSessionDurationMs = totalSessionDurationMs,
             speechSpanDurationMs = spanMs,
-            body = BodyReportData(body),
+            body = bodyData,
+            facePresence = faceData?.framing,
+            gaze = faceData?.gaze,
+            headMovement = faceData?.headMovement,
+            eyeClosure = faceData?.eyeClosure?.takeIf { it.reliable },
             voice = voice,
             rhythmAndFluency = rhythm,
             unavailableSections = unavailable,

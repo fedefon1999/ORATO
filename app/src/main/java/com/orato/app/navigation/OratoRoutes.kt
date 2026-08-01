@@ -3,12 +3,15 @@ package com.orato.app.navigation
 object OratoRoutes {
     const val HOME = "home"
     const val SCENARIO_SELECTION = "scenario_selection"
+    const val FACE_CALIBRATION = "face_calibration/{scenario}"
     const val PRACTICE = "practice/{scenario}"
     const val REPORT_PREPARATION = "report_preparation/{scenario}/{sessionId}"
     const val FINAL_REPORT = "final_report/{scenario}"
 
     /** @deprecated Use [FINAL_REPORT]. Kept so old deep links do not crash. */
     const val BODY_REPORT = "body_report/{scenario}"
+
+    fun faceCalibration(scenarioArg: String): String = "face_calibration/$scenarioArg"
 
     fun practice(scenarioArg: String): String = "practice/$scenarioArg"
 

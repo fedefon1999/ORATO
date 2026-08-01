@@ -26,6 +26,9 @@ object FinalReportPresentation {
     fun formatPercent(value: Double?): String =
         value?.let { "%.0f%%".format(Locale.ITALY, it) } ?: "—"
 
+    fun formatPercent(value: Float?): String =
+        formatPercent(value?.toDouble())
+
     fun formatPercentMetric(metric: PercentMetric): String =
         if (metric.insufficientData || metric.percent == null) {
             "Dati insufficienti"

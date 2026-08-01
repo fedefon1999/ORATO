@@ -13,8 +13,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.orato.app.domain.model.Scenario
+import com.orato.app.domain.model.VisualAnalysisMapping
+import com.orato.app.face.PendingFaceCalibration
 import com.orato.app.report.PendingCompletedReport
 import com.orato.app.report.ReportPreparationCoordinator
+import com.orato.app.ui.calibration.FaceCalibrationScreen
 import com.orato.app.ui.home.HomeScreen
 import com.orato.app.ui.practice.PracticeScreen
 import com.orato.app.ui.report.FinalReportScreen
@@ -47,9 +50,37 @@ fun OratoNavGraph(
         composable(OratoRoutes.SCENARIO_SELECTION) {
             ScenarioSelectionScreen(
                 onScenarioSelected = { scenario ->
-                    navController.navigate(OratoRoutes.practice(scenario.routeArg))
+                    if (VisualAnalysisMapping.requiresFaceCalibration(scenario)) {
+                        navController.navigate(OratoRoutes.faceCalibration(scenario.routeArg))
+                    } else {
+                        PendingFaceCalibration.clear()
+                        navController.navigate(OratoRoutes.practice(scenario.routeArg))
+                    }
                 },
                 onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(
+            route = OratoRoutes.FACE_CALIBRATION,
+            arguments = listOf(
+                navArgument("scenario") { type = NavType.StringType },
+            ),
+        ) { entry ->
+            val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
+            val scenario = Scenario.fromRouteArg(scenarioArg)
+            FaceCalibrationScreen(
+                scenario = scenario,
+                onCalibrationComplete = {
+                    navController.navigate(OratoRoutes.practice(scenario.routeArg)) {
+                        popUpTo(OratoRoutes.FACE_CALIBRATION) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+                onCancel = {
+                    PendingFaceCalibration.clear()
+                    navController.popBackStack()
+                },
             )
         }
 
@@ -63,7 +94,10 @@ fun OratoNavGraph(
             val scenario = Scenario.fromRouteArg(scenarioArg)
             PracticeScreen(
                 scenario = scenario,
-                onExit = { navController.popBackStack() },
+                onExit = {
+                    PendingFaceCalibration.clear()
+                    navController.popBackStack()
+                },
                 onSessionEnded = { nav ->
                     navController.navigate(
                         OratoRoutes.reportPreparation(scenario.routeArg, nav.sessionId),
@@ -139,8 +173,14 @@ fun OratoNavGraph(
                     onRepeat = {
                         PendingCompletedReport.clear()
                         reportPrep.clear()
-                        navController.navigate(OratoRoutes.practice(scenario.routeArg)) {
-                            popUpTo(OratoRoutes.practice(scenario.routeArg)) { inclusive = true }
+                        PendingFaceCalibration.clear()
+                        val dest = if (VisualAnalysisMapping.requiresFaceCalibration(scenario)) {
+                            OratoRoutes.faceCalibration(scenario.routeArg)
+                        } else {
+                            OratoRoutes.practice(scenario.routeArg)
+                        }
+                        navController.navigate(dest) {
+                            popUpTo(OratoRoutes.HOME) { inclusive = false }
                             launchSingleTop = true
                         }
                     },
