@@ -261,6 +261,9 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             val audioMetrics = audioRecorder.metrics.value
             val wav = audioRecorder.completedWavFile()
             val sessionId = UUID.randomUUID().toString()
+            if (wav != null) {
+                com.orato.app.audio.SessionWavRetention.retain(wav)
+            }
 
             _uiState.update {
                 it.copy(
@@ -272,13 +275,14 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 )
             }
 
+            val modelReady = modelManager.ensureReadyFromDisk()
             reportPrep.start(
                 scenarioName = activeScenarioDisplayName.ifBlank { "Sessione" },
                 totalSessionDurationMs = SESSION_DURATION_SECONDS * 1_000L,
                 body = bodyReport,
                 audio = audioMetrics,
                 wavFile = wav,
-                modelReady = modelManager.isReady(),
+                modelReady = modelReady,
                 sessionId = sessionId,
             )
 

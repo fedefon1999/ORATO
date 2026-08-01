@@ -47,6 +47,7 @@ data class VoiceReportData(
 data class RhythmAndFluencyReportData(
     val linguisticAvailable: Boolean,
     val linguisticUnavailableMessage: String? = null,
+    val linguisticUnavailableReason: com.orato.app.speech.LinguisticUnavailableReason? = null,
     val wordCount: Int? = null,
     val wordsPerMinute: Double? = null,
     val discourseMarkers: DiscourseMarkerMetrics? = null,
@@ -88,6 +89,7 @@ object CompletedSessionReportFactory {
         audio: AudioSessionMetrics,
         linguistic: SpeechIntelligenceMetrics?,
         linguisticUnavailableMessage: String? = null,
+        linguisticUnavailableReason: com.orato.app.speech.LinguisticUnavailableReason? = null,
     ): CompletedSessionReport {
         val speechMs = audio.speechDurationMs
         val qualityOk = SpeechMetricsCalculator.isAudioQualityValidForWpm(audio)
@@ -135,6 +137,7 @@ object CompletedSessionReportFactory {
                 linguisticAvailable = false,
                 linguisticUnavailableMessage = linguisticUnavailableMessage
                     ?: SpeechConfig.METRICS_UNAVAILABLE_REPORT,
+                linguisticUnavailableReason = linguisticUnavailableReason,
                 significantPauseCount = significant.takeUnless { voiceInsufficient },
                 significantPausesPerMinute = significantPerMin.takeUnless { voiceInsufficient },
                 longPauseCount = buckets?.longCount.takeUnless { voiceInsufficient },

@@ -181,6 +181,9 @@ class ReportPreparationCoordinator private constructor(
         wavFile: File?,
         modelReady: Boolean,
     ) {
+        if (wavFile != null) {
+            com.orato.app.audio.SessionWavRetention.retain(wavFile)
+        }
         try {
             emitProcessing(sessionId, ReportPreparationStage.FINALIZING_RECORDING, 0.05f)
             delay(40)
@@ -219,6 +222,7 @@ class ReportPreparationCoordinator private constructor(
                 audio = audio,
                 linguistic = linguistic.metrics,
                 linguisticUnavailableMessage = linguistic.unavailableMessage,
+                linguisticUnavailableReason = linguistic.reason,
             )
             val aggregationMs = clockMs() - aggStart
             if (!isActiveSession(sessionId)) return
@@ -250,6 +254,7 @@ class ReportPreparationCoordinator private constructor(
             }
         } finally {
             releaseTranscriber()
+            com.orato.app.audio.SessionWavRetention.release(wavFile)
         }
     }
 
@@ -257,7 +262,13 @@ class ReportPreparationCoordinator private constructor(
         val metrics: com.orato.app.speech.SpeechIntelligenceMetrics?,
         val unavailableMessage: String?,
         val whisperMs: Long,
+        val reason: com.orato.app.speech.LinguisticUnavailableReason? = null,
+        val diagnostics: com.orato.app.speech.LinguisticDiagnostics? = null,
     )
+
+    @Volatile
+    var lastLinguisticDiagnostics: com.orato.app.speech.LinguisticDiagnostics? = null
+        private set
 
     private suspend fun runLinguistic(
         sessionId: String,
@@ -265,23 +276,63 @@ class ReportPreparationCoordinator private constructor(
         wavFile: File?,
         modelReady: Boolean,
     ): LinguisticOutcome {
-        if (!modelReady || wavFile == null || !wavFile.exists() || audio.insufficientData) {
-            emitProcessing(sessionId, ReportPreparationStage.ANALYZING_RHYTHM, 0.7f)
+        fun fail(
+            reason: com.orato.app.speech.LinguisticUnavailableReason,
+            whisperMs: Long = 0L,
+            extra: com.orato.app.speech.LinguisticDiagnostics.() -> com.orato.app.speech.LinguisticDiagnostics = { this },
+        ): LinguisticOutcome {
+            val diag = com.orato.app.speech.LinguisticDiagnostics(
+                reason = reason,
+                sanitizedMessage = SpeechConfig.METRICS_UNAVAILABLE_REPORT,
+                modelReady = modelReady,
+                wavSizeBytes = wavFile?.takeIf { it.isFile }?.length(),
+                sessionId = sessionId,
+            ).extra()
+            lastLinguisticDiagnostics = diag
+            logDebug("linguistic unavailable reason=${reason.debugLabel} session=$sessionId")
             return LinguisticOutcome(
                 metrics = null,
                 unavailableMessage = SpeechConfig.METRICS_UNAVAILABLE_REPORT,
-                whisperMs = 0L,
+                whisperMs = whisperMs,
+                reason = reason,
+                diagnostics = diag,
             )
+        }
+
+        if (audio.insufficientData) {
+            emitProcessing(sessionId, ReportPreparationStage.ANALYZING_RHYTHM, 0.7f)
+            return fail(com.orato.app.speech.LinguisticUnavailableReason.INSUFFICIENT_AUDIO)
+        }
+        if (!modelReady) {
+            emitProcessing(sessionId, ReportPreparationStage.ANALYZING_RHYTHM, 0.7f)
+            return fail(com.orato.app.speech.LinguisticUnavailableReason.MODEL_NOT_DOWNLOADED)
+        }
+        if (wavFile == null) {
+            emitProcessing(sessionId, ReportPreparationStage.ANALYZING_RHYTHM, 0.7f)
+            return fail(com.orato.app.speech.LinguisticUnavailableReason.WAV_NOT_FOUND)
+        }
+        if (!wavFile.exists() || !wavFile.isFile) {
+            emitProcessing(sessionId, ReportPreparationStage.ANALYZING_RHYTHM, 0.7f)
+            return fail(com.orato.app.speech.LinguisticUnavailableReason.WAV_NOT_FOUND)
+        }
+        if (wavFile.length() <= 44L) {
+            emitProcessing(sessionId, ReportPreparationStage.ANALYZING_RHYTHM, 0.7f)
+            return fail(com.orato.app.speech.LinguisticUnavailableReason.WAV_INVALID)
         }
 
         emitProcessing(sessionId, ReportPreparationStage.PREPARING_AUDIO, 0.4f)
         val manager = modelManagerFactory()
-        if (!manager.isReady()) {
-            return LinguisticOutcome(
-                metrics = null,
-                unavailableMessage = SpeechConfig.METRICS_UNAVAILABLE_REPORT,
-                whisperMs = 0L,
-            )
+        val ready = try {
+            manager.ensureReadyFromDisk()
+        } catch (_: Throwable) {
+            false
+        }
+        if (!ready) {
+            val reason = when {
+                manager.isReady() -> com.orato.app.speech.LinguisticUnavailableReason.UNKNOWN
+                else -> com.orato.app.speech.LinguisticUnavailableReason.MODEL_NOT_DOWNLOADED
+            }
+            return fail(reason)
         }
 
         val localTranscriber = transcriberFactory(manager)
@@ -289,13 +340,15 @@ class ReportPreparationCoordinator private constructor(
 
         emitProcessing(sessionId, ReportPreparationStage.ANALYZING_RHYTHM, 0.55f)
         val whisperStart = clockMs()
+        var timedOut = false
         val result = try {
             withTimeoutOrNull(ReportPreparationTimeouts.WHISPER_INFERENCE_MS) {
                 localTranscriber.transcribe(wavFile, SpeechConfig.DEFAULT_LANGUAGE_CODE)
-            }
+            }.also { if (it == null) timedOut = true }
         } catch (_: TranscriptionCancelledException) {
             throw TranscriptionCancelledException()
-        } catch (_: TranscriptionFailedException) {
+        } catch (e: TranscriptionFailedException) {
+            logDebug("whisper failed: ${e.userSafeMessage}")
             null
         } catch (t: Throwable) {
             logDebug("whisper failed: ${t.javaClass.simpleName}")
@@ -308,15 +361,31 @@ class ReportPreparationCoordinator private constructor(
         }
 
         if (result == null) {
-            logDebug("whisper timeout after ${whisperMs}ms")
-            return LinguisticOutcome(
-                metrics = null,
-                unavailableMessage = SpeechConfig.METRICS_UNAVAILABLE_REPORT,
+            return fail(
+                reason = if (timedOut) {
+                    com.orato.app.speech.LinguisticUnavailableReason.INFERENCE_TIMEOUT
+                } else {
+                    com.orato.app.speech.LinguisticUnavailableReason.INFERENCE_FAILED
+                },
                 whisperMs = whisperMs,
-            )
+            ) {
+                copy(inferenceMs = whisperMs)
+            }
         }
 
         emitProcessing(sessionId, ReportPreparationStage.CALCULATING_METRICS, 0.8f)
+        if (result.transcript.isBlank()) {
+            return fail(
+                reason = com.orato.app.speech.LinguisticUnavailableReason.EMPTY_TRANSCRIPT,
+                whisperMs = whisperMs,
+            ) {
+                copy(
+                    inferenceMs = whisperMs,
+                    transcriptCharCount = 0,
+                )
+            }
+        }
+
         val metrics = try {
             SpeechMetricsCalculator.compute(
                 transcript = result.transcript,
@@ -328,14 +397,35 @@ class ReportPreparationCoordinator private constructor(
             null
         }
 
-        return if (metrics == null || result.transcript.isBlank()) {
+        return if (metrics == null) {
+            fail(
+                reason = com.orato.app.speech.LinguisticUnavailableReason.UNKNOWN,
+                whisperMs = whisperMs,
+            ) {
+                copy(
+                    inferenceMs = whisperMs,
+                    transcriptCharCount = result.transcript.length,
+                )
+            }
+        } else {
+            lastLinguisticDiagnostics = com.orato.app.speech.LinguisticDiagnostics(
+                reason = null,
+                sanitizedMessage = null,
+                modelReady = true,
+                wavSizeBytes = wavFile.length(),
+                inferenceMs = whisperMs,
+                transcriptCharCount = result.transcript.length,
+                sessionId = sessionId,
+            )
+            logDebug(
+                "linguistic ok session=$sessionId chars=${result.transcript.length} " +
+                    "words=${metrics.wordCount} inferMs=$whisperMs",
+            )
             LinguisticOutcome(
-                metrics = null,
-                unavailableMessage = SpeechConfig.METRICS_UNAVAILABLE_REPORT,
+                metrics = metrics,
+                unavailableMessage = null,
                 whisperMs = whisperMs,
             )
-        } else {
-            LinguisticOutcome(metrics = metrics, unavailableMessage = null, whisperMs = whisperMs)
         }
     }
 

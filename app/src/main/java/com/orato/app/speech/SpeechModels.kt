@@ -123,12 +123,25 @@ object SpeechConfig {
     const val METRICS_UNAVAILABLE_REPORT: String =
         "Le metriche di ritmo e linguaggio non sono disponibili per questa sessione."
 
-    const val MODEL_NOT_DOWNLOADED_HINT: String =
-        "Per analizzare ritmo e fluidità è necessario scaricare il modello offline."
+    const val MODEL_READY_HINT: String = "Analisi del ritmo pronta"
 
-    const val MODEL_READY_HINT: String = "Analisi del ritmo offline pronta"
+    const val MODEL_NOT_DOWNLOADED_HINT: String =
+        "Modello linguistico non scaricato"
+
+    const val MODEL_INVALID_HINT: String =
+        "Il modello linguistico deve essere riscaricato"
+
+    const val MODEL_DOWNLOADING_HINT: String =
+        "Download del modello in corso"
+
+    const val MODEL_NOT_READY_SESSION_HINT: String =
+        "Puoi esercitarti su corpo e voce; conteggio parole e ritmo non saranno disponibili senza il modello."
 
     const val ANALYSIS_IN_PROGRESS: String = "Analisi del ritmo in corso…"
+
+    const val PREPARE_MODEL_ACTION: String = "Prepara il modello linguistico"
+
+    const val RETRY_SESSION_ACTION: String = "Riprova in una nuova sessione"
 
     fun preferredThreadCount(availableProcessors: Int = Runtime.getRuntime().availableProcessors()): Int =
         minOf(4, maxOf(1, availableProcessors - 1))

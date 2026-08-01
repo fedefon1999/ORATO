@@ -44,6 +44,7 @@ import com.google.accompanist.permissions.shouldShowRationale
 import com.orato.app.domain.model.Scenario
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
+import com.orato.app.speech.SpeechConfig
 import com.orato.app.speech.SpeechReportPresentation
 import com.orato.app.speech.WhisperModelState
 
@@ -363,6 +364,19 @@ private fun WhisperModelStatusRow(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+        if (!sessionRunning &&
+            (state is WhisperModelState.NotDownloaded ||
+                state is WhisperModelState.Invalid ||
+                state is WhisperModelState.Error)
+        ) {
+            Text(
+                text = SpeechConfig.MODEL_NOT_READY_SESSION_HINT,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            )
+        }
         if (!sessionRunning) {
             when {
                 SpeechReportPresentation.showDownloadAction(state) -> {

@@ -20,6 +20,12 @@ import kotlin.coroutines.coroutineContext
 /** Minimal readiness surface used by report preparation (allows JVM test fakes). */
 fun interface WhisperModelReadiness {
     fun isReady(): Boolean
+
+    /**
+     * Ensures the on-disk model is Ready (refresh from file if needed).
+     * Default: [isReady].
+     */
+    fun ensureReadyFromDisk(): Boolean = isReady()
 }
 
 /**
@@ -43,6 +49,33 @@ class WhisperModelManager(
     fun modelPath(): File = modelFile
 
     override fun isReady(): Boolean = _state.value is WhisperModelState.Ready && modelFile.isFile
+
+    /**
+     * Synchronously promotes a present, checksum-valid model file to Ready.
+     * Required when a fresh [WhisperModelManager] is constructed without [refresh]
+     * (e.g. report coordinator factory).
+     */
+    override fun ensureReadyFromDisk(): Boolean {
+        if (isReady()) return true
+        if (!modelFile.isFile) {
+            if (_state.value !is WhisperModelState.Downloading) {
+                _state.value = WhisperModelState.NotDownloaded
+            }
+            return false
+        }
+        return try {
+            if (!verifyChecksum(modelFile)) {
+                _state.value = WhisperModelState.Invalid
+                false
+            } else {
+                _state.value = WhisperModelState.Ready
+                true
+            }
+        } catch (_: Throwable) {
+            _state.value = WhisperModelState.Invalid
+            false
+        }
+    }
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
         _state.value = WhisperModelState.Checking

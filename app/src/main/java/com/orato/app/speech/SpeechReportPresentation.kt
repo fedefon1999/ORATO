@@ -42,12 +42,12 @@ object SpeechReportPresentation {
             WhisperModelState.NotDownloaded -> SpeechConfig.MODEL_NOT_DOWNLOADED_HINT
             is WhisperModelState.Downloading -> {
                 val pct = state.progressPercent
-                if (pct != null) "Download modello: $pct%"
-                else "Download modello…"
+                if (pct != null) "${SpeechConfig.MODEL_DOWNLOADING_HINT}: $pct%"
+                else SpeechConfig.MODEL_DOWNLOADING_HINT
             }
             WhisperModelState.Verifying -> "Verifica del modello…"
             WhisperModelState.Ready -> SpeechConfig.MODEL_READY_HINT
-            WhisperModelState.Invalid -> SpeechConfig.USER_SAFE_MODEL_ERROR
+            WhisperModelState.Invalid -> SpeechConfig.MODEL_INVALID_HINT
             is WhisperModelState.Error -> state.userSafeMessage
         }
 

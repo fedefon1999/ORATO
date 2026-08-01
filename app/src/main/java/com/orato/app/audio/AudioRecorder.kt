@@ -144,7 +144,10 @@ class AudioRecorder(
                 prior == AudioRecordingState.Error
             ) {
                 if (!stopOnce.get()) stopOnce.set(true)
-                cleanupFailedFile()
+                // Never delete a successfully completed WAV here — Whisper may still need it.
+                if (prior != AudioRecordingState.Completed) {
+                    cleanupFailedFile()
+                }
                 releaseRecorderOnly()
                 return
             }
@@ -172,13 +175,26 @@ class AudioRecorder(
 
     /**
      * Full reset between exercises / when leaving the practice screen.
-     * Stops recording, deletes incomplete files, clears metrics.
+     * Stops recording; does not delete a WAV that is leased for post-session analysis.
      */
     suspend fun reset() {
         stop(completed = false)
         stopMutex.withLock {
             stopOnce.set(false)
             keepFileOnStop = false
+            val file = outputFile
+            if (file != null && SessionWavRetention.isRetained(file)) {
+                // Keep path for Whisper; clear recorder state only.
+                sessionId = null
+                sampleRateHz = 0
+                audioSourceLabel = null
+                analyzer = null
+                accumulator = null
+                _metrics.value = AudioSessionMetrics.idle()
+                _state.value = AudioRecordingState.Idle
+                _liveDebug.value = LiveAudioDebug()
+                return
+            }
             sessionId = null
             outputFile = null
             sampleRateHz = 0
