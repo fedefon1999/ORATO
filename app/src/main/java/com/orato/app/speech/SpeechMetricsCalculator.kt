@@ -5,15 +5,10 @@ import com.orato.app.audio.AudioSessionMetrics
 
 /**
  * Builds [SpeechIntelligenceMetrics] from a transcript and finalized VAD speech duration.
- * Pure / deterministic — no ML Kit dependency.
+ * Pure / deterministic — no JNI dependency.
  */
 object SpeechMetricsCalculator {
 
-    /**
-     * @param transcript final transcript text, or null when recognition failed / skipped
-     * @param vadSpeechDurationMs finalized qualified speech duration from VAD (not capture length)
-     * @param audio audio session metrics used to gate WPM on quality
-     */
     fun compute(
         transcript: String?,
         vadSpeechDurationMs: Long,
@@ -34,7 +29,7 @@ object SpeechMetricsCalculator {
         return SpeechIntelligenceMetrics(
             transcript = transcript.trim(),
             wordCount = wordCount,
-            speechDurationMs = vadSpeechDurationMs.coerceAtLeast(0L),
+            vadSpeechDurationMs = vadSpeechDurationMs.coerceAtLeast(0L),
             wordsPerMinute = wpm,
             fillerCount = fillers.fillerCount,
             fillerBreakdown = fillers.breakdown,
@@ -43,8 +38,7 @@ object SpeechMetricsCalculator {
 
     /**
      * WPM = wordCount / (vadSpeechDurationMs / 60_000.0)
-     * Returns null when transcript empty, speech too short, or audio quality invalid.
-     * Never divides by zero.
+     * Never divides by zero. Does not use total captured duration.
      */
     fun wordsPerMinute(
         wordCount: Int,

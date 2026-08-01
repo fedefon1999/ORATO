@@ -274,6 +274,13 @@ private fun SpeechSection(speech: SpeechSessionResult) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        is SpeechSessionResult.Processing -> {
+            Text(
+                text = SpeechReportPresentation.transcriptionStatusLabel(speech.state),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         is SpeechSessionResult.Ready -> {
             SpeechMetricsBlock(speech.metrics)
         }

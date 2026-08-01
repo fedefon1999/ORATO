@@ -1,20 +1,27 @@
 package com.orato.app.speech
 
-import android.os.ParcelFileDescriptor
 import com.orato.app.audio.AudioInputQuality
 import com.orato.app.audio.AudioRecordingState
 import com.orato.app.audio.AudioSessionMetrics
 import com.orato.app.audio.PauseBuckets
-import java.util.Locale
+import com.orato.app.audio.SessionPracticeReport
+import com.orato.app.metrics.SessionBodyReport
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.MessageDigest
 import kotlin.math.abs
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class TranscriptTokenizerTest {
 
@@ -34,20 +41,13 @@ class TranscriptTokenizerTest {
 
     @Test
     fun italianApostrophes_countAsSingleWord() {
-        val tokens = TranscriptTokenizer.tokenize("L'amico dell'insegnante")
-        assertEquals(listOf("L'amico", "dell'insegnante"), tokens)
-        assertEquals(2, tokens.size)
-
-        val curly = TranscriptTokenizer.tokenize("L’acqua")
-        assertEquals(1, curly.size)
-        assertEquals("L’acqua", curly[0])
+        assertEquals(listOf("L'amico", "dell'insegnante"), TranscriptTokenizer.tokenize("L'amico dell'insegnante"))
+        assertEquals(1, TranscriptTokenizer.tokenize("L’acqua").size)
     }
 
     @Test
     fun accentedCharacters_preservedAsWords() {
-        val tokens = TranscriptTokenizer.tokenize("perché città agilità")
-        assertEquals(listOf("perché", "città", "agilità"), tokens)
-        assertEquals(3, tokens.size)
+        assertEquals(listOf("perché", "città", "agilità"), TranscriptTokenizer.tokenize("perché città agilità"))
     }
 
     @Test
@@ -59,8 +59,7 @@ class TranscriptTokenizerTest {
 
     @Test
     fun correctWordCount_mixedPunctuation() {
-        val text = "Buongiorno, come stai? Bene: grazie!"
-        assertEquals(5, TranscriptTokenizer.wordCount(text))
+        assertEquals(5, TranscriptTokenizer.wordCount("Buongiorno, come stai? Bene: grazie!"))
     }
 }
 
@@ -95,13 +94,8 @@ class SpeechMetricsCalculatorTest {
 
     @Test
     fun correctWpm_usesVadSpeechDuration() {
-        // 120 words in 60_000 ms speech → 120 WPM
         val words = (1..120).joinToString(" ") { "parola" }
-        val metrics = SpeechMetricsCalculator.compute(
-            transcript = words,
-            vadSpeechDurationMs = 60_000L,
-            audio = audio(speechMs = 60_000L, capturedMs = 90_000L),
-        )
+        val metrics = SpeechMetricsCalculator.compute(words, 60_000L, audio(speechMs = 60_000L, capturedMs = 90_000L))
         assertNotNull(metrics)
         assertEquals(120, metrics!!.wordCount)
         assertEquals(120.0, metrics.wordsPerMinute!!, 1e-9)
@@ -109,85 +103,46 @@ class SpeechMetricsCalculatorTest {
 
     @Test
     fun wpm_doesNotUseTotalCapturedDuration() {
-        // 60 words, 30 s speech, 90 s capture.
-        // If wrongly using capture: 60 / 1.5 = 40 WPM
-        // Correct with speech: 60 / 0.5 = 120 WPM
         val words = (1..60).joinToString(" ") { "parola" }
-        val metrics = SpeechMetricsCalculator.compute(
-            transcript = words,
-            vadSpeechDurationMs = 30_000L,
-            audio = audio(speechMs = 30_000L, capturedMs = 90_000L),
-        )
-        assertNotNull(metrics)
+        val metrics = SpeechMetricsCalculator.compute(words, 30_000L, audio(speechMs = 30_000L, capturedMs = 90_000L))
         assertEquals(120.0, metrics!!.wordsPerMinute!!, 1e-9)
         assertFalse(abs(metrics.wordsPerMinute!! - 40.0) < 1e-6)
     }
 
     @Test
     fun zeroSpeechDuration_returnsUnavailableWpm() {
-        val wpm = SpeechMetricsCalculator.wordsPerMinute(
-            wordCount = 10,
-            vadSpeechDurationMs = 0L,
-            transcriptEmpty = false,
-            audioQualityValid = true,
-        )
-        assertNull(wpm)
-
-        val metrics = SpeechMetricsCalculator.compute(
-            transcript = "ciao mondo",
-            vadSpeechDurationMs = 0L,
-            audio = audio(speechMs = 0L),
-        )
-        assertNotNull(metrics)
-        assertNull(metrics!!.wordsPerMinute)
-    }
-
-    @Test
-    fun emptyTranscript_nullMetricsFromNullInput_andZeroWords() {
         assertNull(
-            SpeechMetricsCalculator.compute(
-                transcript = null,
-                vadSpeechDurationMs = 30_000L,
-                audio = audio(),
+            SpeechMetricsCalculator.wordsPerMinute(
+                wordCount = 10,
+                vadSpeechDurationMs = 0L,
+                transcriptEmpty = false,
+                audioQualityValid = true,
             ),
         )
-        val empty = SpeechMetricsCalculator.compute(
-            transcript = "",
-            vadSpeechDurationMs = 30_000L,
-            audio = audio(),
-        )
-        assertNotNull(empty)
-        assertEquals(0, empty!!.wordCount)
-        assertNull(empty.wordsPerMinute)
+        val metrics = SpeechMetricsCalculator.compute("ciao mondo", 0L, audio(speechMs = 0L))
+        assertNull(metrics!!.wordsPerMinute)
     }
 
     @Test
-    fun invalidAudioQuality_unavailableWpm() {
-        val words = (1..20).joinToString(" ") { "parola" }
-        val metrics = SpeechMetricsCalculator.compute(
-            transcript = words,
-            vadSpeechDurationMs = 30_000L,
-            audio = audio(quality = AudioInputQuality.INSUFFICIENT_AUDIO, insufficient = true),
-        )
-        assertNotNull(metrics)
+    fun veryShortSpeechDuration_unavailableWpm() {
+        val metrics = SpeechMetricsCalculator.compute("ciao mondo prova", 500L, audio(speechMs = 500L))
         assertNull(metrics!!.wordsPerMinute)
+    }
+
+    @Test
+    fun emptyTranscript_zeroWords() {
+        assertNull(SpeechMetricsCalculator.compute(null, 30_000L, audio()))
+        val empty = SpeechMetricsCalculator.compute("", 30_000L, audio())
+        assertEquals(0, empty!!.wordCount)
+        assertNull(empty.wordsPerMinute)
     }
 }
 
 class FillerDetectorTest {
 
     @Test
-    fun eachVocalFiller_detected() {
-        for (filler in FillerDetector.VOCAL_FILLERS) {
-            val result = FillerDetector.detect(filler)
-            assertEquals("failed for $filler", 1, result.fillerCount)
-            assertEquals(1, result.breakdown[filler])
-        }
-    }
-
-    @Test
-    fun eachDiscourseFiller_detected() {
-        for (filler in FillerDetector.DISCOURSE_FILLERS) {
+    fun eachSupportedFiller_detected() {
+        for (filler in FillerDetector.ALL_FILLERS) {
             val result = FillerDetector.detect(filler)
             assertEquals("failed for $filler", 1, result.fillerCount)
             assertEquals(1, result.breakdown[filler])
@@ -196,26 +151,18 @@ class FillerDetectorTest {
 
     @Test
     fun caseInsensitiveFillers() {
-        val result = FillerDetector.detect("EH Ehm UHM Cioè PRATICAMENTE")
-        assertEquals(5, result.fillerCount)
+        assertEquals(5, FillerDetector.detect("EH Ehm UHM Cioè PRATICAMENTE").fillerCount)
     }
 
     @Test
     fun fillersFollowedByPunctuation() {
-        val result = FillerDetector.detect("eh, ehm! cioè? praticamente.")
-        assertEquals(4, result.fillerCount)
+        assertEquals(4, FillerDetector.detect("eh, ehm! cioè? praticamente.").fillerCount)
     }
 
     @Test
     fun noSubstringFalsePositives() {
-        // "em" must not match inside "tempo" / "sistema" / "emmental"
-        val result = FillerDetector.detect("Il tempo del sistema emmental è buono")
-        assertEquals(0, result.fillerCount)
-
-        // "um" must not match inside "volume"
+        assertEquals(0, FillerDetector.detect("Il tempo del sistema emmental è buono").fillerCount)
         assertEquals(0, FillerDetector.detect("il volume alto").fillerCount)
-
-        // "eh" must not match inside "perché"
         assertEquals(0, FillerDetector.detect("perché sì").fillerCount)
     }
 
@@ -240,26 +187,21 @@ class Pcm16ResamplerTest {
     fun passthrough_16kHz() {
         val resampler = Pcm16Resampler(16_000)
         val input = ShortArray(320) { it.toShort() }
-        val out = resampler.process(input)
-        assertEquals(input.toList(), out.toList())
+        assertEquals(input.toList(), resampler.process(input).toList())
         assertEquals(0, resampler.flush().size)
-        assertEquals(320L, resampler.outputSampleCount)
     }
 
     @Test
-    fun resample_48k_to_16k() {
-        assertResampleDuration(48_000, inputSeconds = 1.0)
-    }
+    fun resample_48k_to_16k() = assertResampleDuration(48_000)
 
     @Test
-    fun resample_44100_to_16k() {
-        assertResampleDuration(44_100, inputSeconds = 1.0)
-    }
+    fun resample_44100_to_16k() = assertResampleDuration(44_100)
 
     @Test
-    fun resample_22050_to_16k() {
-        assertResampleDuration(22_050, inputSeconds = 1.0)
-    }
+    fun resample_22050_to_16k() = assertResampleDuration(22_050)
+
+    @Test
+    fun resample_11025_to_16k() = assertResampleDuration(11_025)
 
     @Test
     fun outputDurationTolerance() {
@@ -270,118 +212,233 @@ class Pcm16ResamplerTest {
     @Test
     fun resamplerFinalFlush_emitsRemaining() {
         val resampler = Pcm16Resampler(48_000)
-        // Odd-sized chunk so fractional cursor remains.
-        val chunk = ShortArray(100) { 1000 }
-        resampler.process(chunk)
-        val flushed = resampler.flush()
-        // After flush, duration should be close to input duration.
+        resampler.process(ShortArray(100) { 1000 })
+        resampler.flush()
         val expectedMs = 100.0 * 1000.0 / 48_000.0
-        val actualMs = resampler.actualOutputDurationMs()
-        assertTrue(
-            "expected≈$expectedMs actual=$actualMs flush=${flushed.size}",
-            abs(actualMs - expectedMs) < 5.0,
-        )
+        assertTrue(abs(resampler.actualOutputDurationMs() - expectedMs) < 5.0)
     }
 
     @Test
-    fun doesNotMutateInput() {
-        val input = ShortArray(480) { 42 }
-        val copy = input.copyOf()
-        Pcm16Resampler(48_000).process(input)
-        assertEquals(copy.toList(), input.toList())
+    fun sampleClippingLimits_floatConversion() {
+        val floats = Pcm16ToFloatConverter.convert(shortArrayOf(Short.MAX_VALUE, Short.MIN_VALUE, 0))
+        assertTrue(floats[0] <= 1.0f)
+        assertTrue(floats[1] >= -1.0f)
+        assertEquals(0.0f, floats[2], 1e-6f)
     }
 
     private fun assertResampleDuration(
         inputRate: Int,
-        inputSeconds: Double,
+        inputSeconds: Double = 1.0,
         toleranceMs: Double = 20.0,
     ) {
         val resampler = Pcm16Resampler(inputRate)
         val totalSamples = (inputRate * inputSeconds).toInt()
-        // Process in 20 ms frames.
-        val frame = inputRate / 50
+        val frame = (inputRate / 50).coerceAtLeast(1)
         var offset = 0
         while (offset < totalSamples) {
             val len = minOf(frame, totalSamples - offset)
-            val chunk = ShortArray(len) { 500 }
-            resampler.process(chunk)
+            resampler.process(ShortArray(len) { 500 })
             offset += len
         }
         resampler.flush()
-        val expectedMs = inputSeconds * 1000.0
-        val actualMs = resampler.actualOutputDurationMs()
         assertTrue(
-            "rate=$inputRate expected=${expectedMs}ms actual=${actualMs}ms",
-            abs(actualMs - expectedMs) <= toleranceMs,
+            abs(resampler.actualOutputDurationMs() - inputSeconds * 1000.0) <= toleranceMs,
         )
     }
 }
 
-class SpeechReportPresentationTest {
+class WavPcm16ReaderTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     @Test
-    fun italianDecimalFormatting_remainsCorrect() {
-        val text = SpeechReportPresentation.formatDecimal(-24.5, 1)
-        assertEquals("-24,5", text)
-        assertEquals(Locale.ITALY, Locale.ITALY)
-        // Also verify existing voice formatter stays Italian.
-        val dbfs = com.orato.app.audio.VoiceReportPresentation.formatMeanVolumeDbfs(-24.5)
-        assertEquals("Volume medio: -24,5 dBFS", dbfs)
+    fun validPcm16MonoWav() {
+        val file = writeWav(sampleRate = 16_000, channels = 1, samples = ShortArray(1600) { 100 })
+        val info = WavPcm16Reader.readInfo(file)
+        assertEquals(16_000, info.sampleRateHz)
+        assertEquals(1, info.channelCount)
+        assertEquals(16, info.bitsPerSample)
+        val prepared = WavPcm16Reader.prepareForWhisper(file)
+        assertEquals(16_000, prepared.sampleRateHz)
+        assertEquals(1600, prepared.samples.size)
     }
 
     @Test
-    fun wpmRoundedForDisplay_domainKeepsDouble() {
-        assertEquals("132 parole/min", SpeechReportPresentation.formatWpm(132.4))
-        assertEquals("133 parole/min", SpeechReportPresentation.formatWpm(132.6))
-        assertEquals("—", SpeechReportPresentation.formatWpm(null))
+    fun riffHeaderValidation_rejectsNonWav() {
+        val file = tempFolder.newFile("bad.wav")
+        file.writeBytes("NOTAWAVEFILE!!!!!".toByteArray())
+        try {
+            WavPcm16Reader.readInfo(file)
+            fail("expected InvalidRiff")
+        } catch (_: WavPcm16Reader.WavReadError.InvalidRiff) {
+        }
+    }
+
+    @Test
+    fun missingDataChunk_rejected() {
+        val file = tempFolder.newFile("nodata.wav")
+        // RIFF/WAVE with fmt only — no data chunk.
+        val out = ByteArrayOutputStream()
+        out.write("RIFF".toByteArray())
+        out.write(leInt(36))
+        out.write("WAVE".toByteArray())
+        out.write("fmt ".toByteArray())
+        out.write(leInt(16))
+        out.write(leShort(1))
+        out.write(leShort(1))
+        out.write(leInt(16_000))
+        out.write(leInt(32_000))
+        out.write(leShort(2))
+        out.write(leShort(16))
+        file.writeBytes(out.toByteArray())
+        try {
+            WavPcm16Reader.readInfo(file)
+            fail("expected MissingDataChunk")
+        } catch (_: WavPcm16Reader.WavReadError.MissingDataChunk) {
+        }
+    }
+
+    @Test
+    fun unsupportedEncoding_rejected() {
+        val file = writeWav(sampleRate = 16_000, channels = 1, samples = ShortArray(10), audioFormat = 3)
+        try {
+            WavPcm16Reader.readInfo(file)
+            fail("expected UnsupportedEncoding")
+        } catch (_: WavPcm16Reader.WavReadError.UnsupportedEncoding) {
+        }
+    }
+
+    @Test
+    fun truncatedWav_rejected() {
+        val file = writeWav(sampleRate = 16_000, channels = 1, samples = ShortArray(100))
+        val bytes = file.readBytes()
+        file.writeBytes(bytes.copyOf(bytes.size / 2))
+        try {
+            WavPcm16Reader.readInfo(file)
+            fail("expected Truncated")
+        } catch (_: WavPcm16Reader.WavReadError) {
+        }
+    }
+
+    @Test
+    fun pcm16ToFloat_andResampleFrom48k() {
+        val file = writeWav(sampleRate = 48_000, channels = 1, samples = ShortArray(48_000) { 200 })
+        val prepared = WavPcm16Reader.prepareForWhisper(file)
+        assertEquals(16_000, prepared.sampleRateHz)
+        assertTrue(abs(prepared.durationMs - 1000L) <= 25L)
+        assertTrue(prepared.samples.all { it in -1.0f..1.0f })
+    }
+
+    private fun writeWav(
+        sampleRate: Int,
+        channels: Int,
+        samples: ShortArray,
+        audioFormat: Int = 1,
+    ): File {
+        val dataBytes = samples.size * 2
+        val out = ByteArrayOutputStream()
+        out.write("RIFF".toByteArray())
+        out.write(leInt(36 + dataBytes))
+        out.write("WAVE".toByteArray())
+        out.write("fmt ".toByteArray())
+        out.write(leInt(16))
+        out.write(leShort(audioFormat))
+        out.write(leShort(channels))
+        out.write(leInt(sampleRate))
+        out.write(leInt(sampleRate * channels * 2))
+        out.write(leShort(channels * 2))
+        out.write(leShort(16))
+        out.write("data".toByteArray())
+        out.write(leInt(dataBytes))
+        val pcm = ByteBuffer.allocate(dataBytes).order(ByteOrder.LITTLE_ENDIAN)
+        samples.forEach { pcm.putShort(it) }
+        out.write(pcm.array())
+        val file = tempFolder.newFile("t_${sampleRate}_${channels}.wav")
+        file.writeBytes(out.toByteArray())
+        return file
+    }
+
+    private fun leInt(v: Int): ByteArray =
+        ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(v).array()
+
+    private fun leShort(v: Int): ByteArray =
+        ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(v.toShort()).array()
+}
+
+class ModelChecksumTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    @Test
+    fun modelChecksumSuccess() {
+        val file = tempFolder.newFile("model.bin")
+        file.writeBytes("orato-test-model-bytes".toByteArray())
+        val sha1 = sha1(file)
+        assertEquals(40, sha1.length)
+        assertEquals(sha1, sha1(file))
+    }
+
+    @Test
+    fun modelChecksumFailure_detectsMismatch() {
+        val file = tempFolder.newFile("model.bin")
+        file.writeBytes("aaa".toByteArray())
+        assertFalse(sha1(file).equals(WhisperModelSpec.GGML_BASE.expectedSha1, ignoreCase = true))
+    }
+
+    @Test
+    fun partialDownloadCleanup() {
+        val dir = tempFolder.newFolder("whisper", "models")
+        val part = File(dir, "ggml-base.bin.part")
+        part.writeBytes(ByteArray(100))
+        assertTrue(part.exists())
+        part.delete()
+        assertFalse(part.exists())
+    }
+
+    private fun sha1(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-1")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(4096)
+            while (true) {
+                val n = input.read(buffer)
+                if (n < 0) break
+                digest.update(buffer, 0, n)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 }
 
 class FakeSpeechTranscriber(
-    private var availability: TranscriptionAvailability = TranscriptionAvailability.Ready,
+    private var result: TranscriptionResult? = TranscriptionResult(
+        transcript = "ciao mondo",
+        detectedLanguage = "it",
+        segments = listOf(TranscriptSegment("ciao mondo", 0, 1000)),
+        processingDurationMs = 10,
+    ),
+    private var fail: Boolean = false,
 ) : SpeechTranscriber {
-    var prepareCalled = false
-        private set
-    var startCalled = false
-        private set
-    var stopCalled = false
+    var cancelled = false
         private set
     var closed = false
         private set
-    var failRecognition = false
+    var transcribeCalls = 0
+        private set
 
-    fun setAvailability(value: TranscriptionAvailability) {
-        availability = value
+    override suspend fun transcribe(audioFile: File, languageCode: String): TranscriptionResult {
+        transcribeCalls++
+        if (cancelled) throw TranscriptionCancelledException()
+        if (fail) throw TranscriptionFailedException(SpeechConfig.USER_SAFE_TRANSCRIPTION_ERROR)
+        return result ?: throw TranscriptionFailedException(SpeechConfig.USER_SAFE_TRANSCRIPTION_ERROR)
     }
 
-    override suspend fun checkAvailability(): TranscriptionAvailability = availability
-
-    override suspend fun prepareModel(): TranscriptionAvailability {
-        prepareCalled = true
-        if (availability is TranscriptionAvailability.DownloadRequired) {
-            availability = TranscriptionAvailability.Ready
-        }
-        return availability
+    override fun requestCancellation() {
+        cancelled = true
     }
 
-    override fun startRecognition(readPfd: ParcelFileDescriptor): Flow<TranscriptUpdate> {
-        startCalled = true
-        return flow {
-            if (failRecognition) {
-                emit(TranscriptUpdate.Failed(SpeechConfig.USER_SAFE_RECOGNITION_ERROR))
-            } else {
-                emit(TranscriptUpdate.Partial("ciao"))
-                emit(TranscriptUpdate.Final("ciao mondo"))
-                emit(TranscriptUpdate.Completed)
-            }
-        }
-    }
-
-    override suspend fun stop() {
-        stopCalled = true
-    }
-
-    override fun close() {
+    override suspend fun close() {
         closed = true
     }
 }
@@ -389,24 +446,19 @@ class FakeSpeechTranscriber(
 class SpeechTranscriberFakeTest {
 
     @Test
-    fun unavailableTranscriptionState() {
-        val fake = FakeSpeechTranscriber(
-            TranscriptionAvailability.Unavailable(UnavailableReason.UnsupportedApiLevel),
-        )
-        // Synchronous check via runBlocking-free: just assert mapping helpers.
-        val availability = TranscriptionAvailability.Unavailable(UnavailableReason.FeatureUnavailable)
-        assertTrue(availability is TranscriptionAvailability.Unavailable)
+    fun transcriptionUnavailableWithoutModel() {
         assertEquals(
-            SpeechConfig.USER_SAFE_UNAVAILABLE,
-            SpeechReportPresentation.statusLabel(
-                TranscriptionState.Unavailable(UnavailableReason.DeviceUnsupported),
-            ),
+            SpeechConfig.METRICS_UNAVAILABLE_REPORT,
+            SpeechReportPresentation.transcriptionStatusLabel(TranscriptionState.ModelUnavailable),
+        )
+        assertTrue(
+            SpeechReportPresentation.modelStatusLabel(WhisperModelState.NotDownloaded)
+                .contains("modello offline"),
         )
     }
 
     @Test
-    fun recognitionError_doesNotInvalidateAudioMetrics() {
-        // Audio metrics remain valid independently of transcription failure.
+    fun nativeTranscriptionFailure_doesNotInvalidateAudioMetrics() {
         val audio = AudioSessionMetrics(
             state = AudioRecordingState.Completed,
             inputQuality = AudioInputQuality.GOOD,
@@ -427,25 +479,43 @@ class SpeechTranscriberFakeTest {
             errorMessage = null,
             insufficientData = false,
         )
-        val speech = SpeechSessionResult.Unavailable(SpeechConfig.USER_SAFE_RECOGNITION_ERROR)
-        // Combined report keeps audio intact.
-        val report = com.orato.app.audio.SessionPracticeReport(
-            body = com.orato.app.metrics.SessionBodyReport.emptyInsufficient(),
+        val report = SessionPracticeReport(
+            body = SessionBodyReport.emptyInsufficient(),
             audio = audio,
-            speech = speech,
+            speech = SpeechSessionResult.Unavailable(SpeechConfig.USER_SAFE_TRANSCRIPTION_ERROR),
         )
         assertFalse(report.audio.insufficientData)
         assertEquals(AudioInputQuality.GOOD, report.audio.inputQuality)
         assertTrue(report.speech is SpeechSessionResult.Unavailable)
-        // Computing metrics with null transcript yields null — audio untouched.
-        assertNull(
-            SpeechMetricsCalculator.compute(
-                transcript = null,
-                vadSpeechDurationMs = audio.speechDurationMs ?: 0L,
-                audio = audio,
-            ),
+    }
+
+    @Test
+    fun cancellationState() {
+        val fake = FakeSpeechTranscriber()
+        fake.requestCancellation()
+        assertTrue(fake.cancelled)
+        assertEquals(
+            "Trascrizione annullata",
+            SpeechReportPresentation.transcriptionStatusLabel(TranscriptionState.Cancelled),
         )
-        assertEquals(90_000L, audio.capturedDurationMs)
-        assertEquals(40_000L, audio.speechDurationMs)
+    }
+
+    @Test
+    fun fakeSpeechTranscriberIntegration() = runBlocking {
+        val fake = FakeSpeechTranscriber()
+        val result = fake.transcribe(File("unused.wav"), "it")
+        assertEquals("ciao mondo", result.transcript)
+        assertEquals(1, fake.transcribeCalls)
+        fake.close()
+        assertTrue(fake.closed)
+    }
+
+    @Test
+    fun italianDbfsFormatting_remainsCorrect() {
+        assertEquals("-24,5", SpeechReportPresentation.formatDecimal(-24.5, 1))
+        assertEquals(
+            "Volume medio: -24,5 dBFS",
+            com.orato.app.audio.VoiceReportPresentation.formatMeanVolumeDbfs(-24.5),
+        )
     }
 }

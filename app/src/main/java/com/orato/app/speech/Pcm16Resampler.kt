@@ -2,14 +2,7 @@ package com.orato.app.speech
 
 /**
  * Incremental mono PCM16 resampler targeting [SpeechConfig.TARGET_SAMPLE_RATE_HZ].
- *
- * - No Android / UI dependencies
- * - Deterministic linear interpolation
- * - Does not mutate the caller's input buffer
- * - Processes audio incrementally with bounded leftover state
- * - [flush] emits remaining output samples at stop
- *
- * When [inputRateHz] equals the target rate, frames pass through (copied).
+ * Pure Kotlin — deterministic linear interpolation, no Android UI deps.
  */
 class Pcm16Resampler(
     private val inputRateHz: Int,
@@ -21,20 +14,9 @@ class Pcm16Resampler(
     }
 
     private val passthrough: Boolean = inputRateHz == outputRateHz
-
-    /** Step in input-sample units per output sample. */
     private val step: Double = inputRateHz.toDouble() / outputRateHz.toDouble()
-
-    /**
-     * Continuous read cursor in the concatenated input stream (sample units).
-     * Advances by [step] for each emitted output sample.
-     */
     private var cursor: Double = 0.0
-
-    /** Ring of recent input samples needed for interpolation across chunk boundaries. */
     private val history = ArrayList<Short>(8)
-
-    /** Absolute index of history[0] in the input stream. */
     private var historyStartIndex: Long = 0L
 
     var inputSampleCount: Long = 0L
@@ -42,14 +24,8 @@ class Pcm16Resampler(
     var outputSampleCount: Long = 0L
         private set
 
-    /**
-     * Resamples [length] samples starting at [offset] in [input].
-     * Returns a new ShortArray (possibly empty). Never mutates [input].
-     */
     fun process(input: ShortArray, offset: Int = 0, length: Int = input.size): ShortArray {
-        require(offset >= 0 && length >= 0 && offset + length <= input.size) {
-            "Invalid range offset=$offset length=$length size=${input.size}"
-        }
+        require(offset >= 0 && length >= 0 && offset + length <= input.size)
         if (length == 0) return ShortArray(0)
 
         if (passthrough) {
@@ -58,11 +34,12 @@ class Pcm16Resampler(
             return input.copyOfRange(offset, offset + length)
         }
 
-        appendHistory(input, offset, length)
+        for (i in 0 until length) {
+            history.add(input[offset + i])
+        }
         inputSampleCount += length.toLong()
 
-        val availableEnd = inputSampleCount // exclusive
-        // Need sample at floor(cursor)+1 for interpolation → cursor+1 < availableEnd
+        val availableEnd = inputSampleCount
         val out = ArrayList<Short>(((length / step) + 2).toInt().coerceAtLeast(1))
         while (cursor + 1.0 < availableEnd.toDouble() + 1e-12) {
             out.add(interpolateAt(cursor))
@@ -73,18 +50,12 @@ class Pcm16Resampler(
         return out.toShortArray()
     }
 
-    /**
-     * Flushes remaining output using zero-order hold on the last input sample
-     * so total output duration matches input duration within a small tolerance.
-     */
     fun flush(): ShortArray {
         if (passthrough || history.isEmpty()) {
             history.clear()
             return ShortArray(0)
         }
-
         val lastIndex = inputSampleCount - 1L
-        // Emit until cursor reaches the end of the input timeline.
         val endCursor = lastIndex.toDouble()
         val out = ArrayList<Short>(4)
         while (cursor <= endCursor + 1e-9) {
@@ -111,14 +82,7 @@ class Pcm16Resampler(
     fun actualOutputDurationMs(): Double =
         outputSampleCount * 1000.0 / outputRateHz.toDouble()
 
-    private fun appendHistory(input: ShortArray, offset: Int, length: Int) {
-        for (i in 0 until length) {
-            history.add(input[offset + i])
-        }
-    }
-
     private fun trimHistory() {
-        // Keep samples from floor(cursor) onward (need floor and floor+1).
         val keepFrom = cursor.toLong().coerceAtLeast(0L)
         val drop = (keepFrom - historyStartIndex).toInt()
         if (drop > 0 && drop < history.size) {
@@ -149,5 +113,50 @@ class Pcm16Resampler(
             local >= history.size -> history.last()
             else -> history[local]
         }
+    }
+}
+
+/** Converts signed PCM16 to float samples in [-1.0, 1.0]. Clips outliers. */
+object Pcm16ToFloatConverter {
+    private const val SCALE = 32768.0f
+
+    fun convert(samples: ShortArray, offset: Int = 0, length: Int = samples.size): FloatArray {
+        require(offset >= 0 && length >= 0 && offset + length <= samples.size)
+        val out = FloatArray(length)
+        for (i in 0 until length) {
+            val v = samples[offset + i] / SCALE
+            out[i] = when {
+                v > 1.0f -> 1.0f
+                v < -1.0f -> -1.0f
+                else -> v
+            }
+        }
+        return out
+    }
+}
+
+/**
+ * Downmixes interleaved PCM16 to mono by averaging channels.
+ * For mono input, returns a copy of the range.
+ */
+object MonoDownmixer {
+    fun toMono(samples: ShortArray, channelCount: Int, offset: Int = 0, length: Int = samples.size): ShortArray {
+        require(channelCount >= 1)
+        require(offset >= 0 && length >= 0 && offset + length <= samples.size)
+        require(length % channelCount == 0) { "length must be a multiple of channelCount" }
+        if (channelCount == 1) {
+            return samples.copyOfRange(offset, offset + length)
+        }
+        val frames = length / channelCount
+        val out = ShortArray(frames)
+        var idx = offset
+        for (f in 0 until frames) {
+            var sum = 0
+            for (c in 0 until channelCount) {
+                sum += samples[idx++]
+            }
+            out[f] = (sum / channelCount).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
+        return out
     }
 }

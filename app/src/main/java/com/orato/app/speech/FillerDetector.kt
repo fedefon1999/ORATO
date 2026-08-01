@@ -4,27 +4,17 @@ package com.orato.app.speech
  * Deterministic, boundary-aware Italian filler detection.
  * Operates on tokenizer tokens — never matches substrings inside normal words.
  *
- * Does not classify ambiguous discourse markers such as “tipo” or “allora”.
+ * Whisper may omit or normalize vocal fillers, so counts are estimates —
+ * not complete acoustic measurements. Does not classify “tipo” / “allora”.
  */
 object FillerDetector {
 
-    /** Vocal / hesitation fillers (normalized forms). */
     val VOCAL_FILLERS: Set<String> = setOf(
-        "eh",
-        "ehm",
-        "em",
-        "uhm",
-        "um",
-        "mhm",
-        "mmm",
+        "eh", "ehm", "em", "uhm", "um", "mhm", "mmm",
     )
 
-    /** Discourse fillers (normalized forms). */
     val DISCOURSE_FILLERS: Set<String> = setOf(
-        "cioè",
-        "praticamente",
-        "diciamo",
-        "insomma",
+        "cioè", "praticamente", "diciamo", "insomma",
     )
 
     val ALL_FILLERS: Set<String> = VOCAL_FILLERS + DISCOURSE_FILLERS
