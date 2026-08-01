@@ -40,7 +40,21 @@ fun FinalReportScreen(
     ) {
         ReportHeader(scenario = scenario, report = report)
         SessionOverviewCard(report = report)
-        BodySectionCard(report = report)
+        if (report.body != null) {
+            BodySectionCard(report = report)
+        }
+        if (report.facePresence != null) {
+            FacePresenceSectionCard(report = report)
+        }
+        if (report.gaze != null) {
+            GazeSectionCard(report = report)
+        }
+        if (report.headMovement != null) {
+            HeadMovementSectionCard(report = report)
+        }
+        if (report.eyeClosure != null && report.eyeClosure.reliable) {
+            EyeClosureSectionCard(report = report)
+        }
         VoiceSectionCard(report = report)
         RhythmSectionCard(report = report)
         AiCoachingSection(report.aiCoachingState)
@@ -112,7 +126,7 @@ private fun SessionOverviewCard(report: CompletedSessionReport) {
 
 @Composable
 private fun BodySectionCard(report: CompletedSessionReport) {
-    val body = report.body.session
+    val body = report.body?.session ?: return
     ReportSectionCard(title = "Corpo") {
         MetricItem("Presenza in camera", FinalReportPresentation.formatPercentMetric(body.cameraPresence))
         MetricItem("Equilibrio spalle", FinalReportPresentation.formatScored(body.shoulderBalance))
@@ -123,6 +137,107 @@ private fun BodySectionCard(report: CompletedSessionReport) {
         MetricItem(
             "Attività gestuale",
             FinalReportPresentation.formatGesture(body.gestureActivity.classification),
+        )
+    }
+}
+
+@Composable
+private fun FacePresenceSectionCard(report: CompletedSessionReport) {
+    val framing = report.facePresence ?: return
+    ReportSectionCard(title = "Presenza in video") {
+        if (framing.insufficientData) {
+            MetricItem("Presenza in video", "Non disponibile")
+            return@ReportSectionCard
+        }
+        MetricItem(
+            "Viso rilevato",
+            framing.faceDetectedPercent?.let { FinalReportPresentation.formatPercent(it) } ?: "—",
+        )
+        MetricItem(
+            "Tracciamento valido",
+            framing.validTrackingPercent?.let { FinalReportPresentation.formatPercent(it) } ?: "—",
+        )
+        MetricItem(
+            "Volto centrato",
+            framing.centeredFacePercent?.let { FinalReportPresentation.formatPercent(it) } ?: "—",
+        )
+        MetricItem("Uscite dall’inquadratura", framing.outOfFrameEventCount.toString())
+        MetricItem(
+            "Tempo troppo vicino",
+            FinalReportPresentation.formatDuration(framing.tooCloseDurationMs),
+        )
+        MetricItem(
+            "Tempo troppo lontano",
+            FinalReportPresentation.formatDuration(framing.tooFarDurationMs),
+        )
+    }
+}
+
+@Composable
+private fun GazeSectionCard(report: CompletedSessionReport) {
+    val gaze = report.gaze ?: return
+    ReportSectionCard(
+        title = "Sguardo verso la videocamera",
+        summary = gaze.explanation,
+    ) {
+        if (gaze.insufficientData) {
+            MetricItem("Sguardo verso la videocamera", "Non disponibile")
+            return@ReportSectionCard
+        }
+        MetricItem(
+            "Sguardo verso la videocamera",
+            gaze.towardCameraPercent?.let { FinalReportPresentation.formatPercent(it) } ?: "—",
+        )
+        MetricItem(
+            "Tratto continuo più lungo",
+            FinalReportPresentation.formatDuration(gaze.longestTowardCameraMs),
+        )
+        MetricItem("Distacchi significativi", gaze.significantAwayCount.toString())
+        MetricItem(
+            "Durata media dei distacchi",
+            FinalReportPresentation.formatDuration(gaze.averageSignificantAwayMs),
+        )
+        MetricItem(
+            "Distacco più lungo",
+            FinalReportPresentation.formatDuration(gaze.longestAwayMs),
+        )
+        MetricItem(
+            "Tempo di tracciamento disponibile",
+            FinalReportPresentation.formatDuration(gaze.validGazeTrackingMs),
+        )
+    }
+}
+
+@Composable
+private fun HeadMovementSectionCard(report: CompletedSessionReport) {
+    val head = report.headMovement ?: return
+    ReportSectionCard(title = "Movimento della testa") {
+        if (head.insufficientData) {
+            MetricItem("Movimento della testa", "Non disponibile")
+            return@ReportSectionCard
+        }
+        MetricItem(
+            "Testa centrata",
+            head.centeredHeadPercent?.let { FinalReportPresentation.formatPercent(it) } ?: "—",
+        )
+        MetricItem("Rotazioni orizzontali ampie", head.largeHorizontalTurnCount.toString())
+        MetricItem("Movimenti verticali ampi", head.largeVerticalMovementCount.toString())
+        MetricItem("Inclinazioni laterali", head.lateralTiltCount.toString())
+        MetricItem(
+            "Tratto stabile più lungo",
+            FinalReportPresentation.formatDuration(head.longestStableHeadMs),
+        )
+    }
+}
+
+@Composable
+private fun EyeClosureSectionCard(report: CompletedSessionReport) {
+    val eye = report.eyeClosure ?: return
+    ReportSectionCard(title = "Chiusura degli occhi") {
+        MetricItem("Eventi di chiusura prolungata", eye.prolongedClosureEventCount.toString())
+        MetricItem(
+            "Chiusura prolungata più lunga",
+            FinalReportPresentation.formatDuration(eye.longestProlongedClosureMs),
         )
     }
 }

@@ -33,6 +33,7 @@ import kotlinx.coroutines.sync.withLock
 enum class ReportPreparationStage {
     FINALIZING_RECORDING,
     FINALIZING_BODY_ANALYSIS,
+    FINALIZING_FACE_ANALYSIS,
     FINALIZING_VOICE_ANALYSIS,
     PREPARING_AUDIO,
     ANALYZING_RHYTHM,
@@ -122,11 +123,18 @@ class ReportPreparationCoordinator private constructor(
     fun start(
         scenarioName: String,
         totalSessionDurationMs: Long,
-        body: SessionBodyReport,
+        body: SessionBodyReport?,
         audio: AudioSessionMetrics,
         wavFile: File?,
         modelReady: Boolean,
         sessionId: String = UUID.randomUUID().toString(),
+        scenario: com.orato.app.domain.model.Scenario? = null,
+        visualAnalysisMode: com.orato.app.domain.model.VisualAnalysisMode =
+            scenario?.let { com.orato.app.domain.model.VisualAnalysisMapping.modeFor(it) }
+                ?: com.orato.app.domain.model.VisualAnalysisMode.BODY_ONLY,
+        face: com.orato.app.face.SessionFaceReport? = null,
+        bodyFailed: Boolean = false,
+        faceFailed: Boolean = false,
     ) {
         scope.launch {
             mutex.withLock {
@@ -144,6 +152,11 @@ class ReportPreparationCoordinator private constructor(
                         audio = audio,
                         wavFile = wavFile,
                         modelReady = modelReady,
+                        scenario = scenario,
+                        visualAnalysisMode = visualAnalysisMode,
+                        face = face,
+                        bodyFailed = bodyFailed,
+                        faceFailed = faceFailed,
                     )
                 }
             }
@@ -176,10 +189,15 @@ class ReportPreparationCoordinator private constructor(
         sessionId: String,
         scenarioName: String,
         totalSessionDurationMs: Long,
-        body: SessionBodyReport,
+        body: SessionBodyReport?,
         audio: AudioSessionMetrics,
         wavFile: File?,
         modelReady: Boolean,
+        scenario: com.orato.app.domain.model.Scenario?,
+        visualAnalysisMode: com.orato.app.domain.model.VisualAnalysisMode,
+        face: com.orato.app.face.SessionFaceReport?,
+        bodyFailed: Boolean,
+        faceFailed: Boolean,
     ) {
         if (wavFile != null) {
             com.orato.app.audio.SessionWavRetention.retain(wavFile)
@@ -189,9 +207,20 @@ class ReportPreparationCoordinator private constructor(
             delay(40)
             if (!isActiveSession(sessionId)) return
 
-            emitProcessing(sessionId, ReportPreparationStage.FINALIZING_BODY_ANALYSIS, 0.15f)
-            delay(40)
-            if (!isActiveSession(sessionId)) return
+            val usesPose = com.orato.app.domain.model.VisualAnalysisMapping.usesPose(visualAnalysisMode)
+            val usesFace = com.orato.app.domain.model.VisualAnalysisMapping.usesFace(visualAnalysisMode)
+
+            // Wait only for components required by the selected visual mode.
+            if (usesPose) {
+                emitProcessing(sessionId, ReportPreparationStage.FINALIZING_BODY_ANALYSIS, 0.12f)
+                delay(40)
+                if (!isActiveSession(sessionId)) return
+            }
+            if (usesFace) {
+                emitProcessing(sessionId, ReportPreparationStage.FINALIZING_FACE_ANALYSIS, 0.18f)
+                delay(40)
+                if (!isActiveSession(sessionId)) return
+            }
 
             emitProcessing(sessionId, ReportPreparationStage.FINALIZING_VOICE_ANALYSIS, 0.25f)
             delay(40)
@@ -223,6 +252,11 @@ class ReportPreparationCoordinator private constructor(
                 linguistic = linguistic.metrics,
                 linguisticUnavailableMessage = linguistic.unavailableMessage,
                 linguisticUnavailableReason = linguistic.reason,
+                scenario = scenario,
+                visualAnalysisMode = visualAnalysisMode,
+                face = face,
+                bodyFailed = bodyFailed,
+                faceFailed = faceFailed,
             )
             val aggregationMs = clockMs() - aggStart
             if (!isActiveSession(sessionId)) return

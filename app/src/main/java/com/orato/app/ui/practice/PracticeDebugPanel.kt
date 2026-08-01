@@ -36,13 +36,15 @@ import androidx.compose.ui.unit.dp
 import com.orato.app.audio.AudioRecordingState
 import com.orato.app.audio.LiveAudioDebug
 import com.orato.app.audio.VadState
+import com.orato.app.domain.model.VisualAnalysisMode
+import com.orato.app.face.LiveFaceMetrics
 import com.orato.app.metrics.HandDebugInfo
 import com.orato.app.metrics.LandmarkDebugInfo
 import com.orato.app.metrics.LiveBodyMetrics
 import com.orato.app.pose.PoseDetectionStatus
 
 /**
- * Single compact collapsible development overlay for body + audio live metrics.
+ * Single compact collapsible development overlay for body + face + audio live metrics.
  * Collapsed by default; the whole panel is capped to ~25% of screen height.
  */
 @Composable
@@ -52,12 +54,22 @@ fun PracticeDebugPanel(
     bodyMetrics: LiveBodyMetrics,
     audioDebug: LiveAudioDebug,
     modifier: Modifier = Modifier,
+    visualAnalysisMode: VisualAnalysisMode = VisualAnalysisMode.BODY_ONLY,
+    faceMetrics: LiveFaceMetrics = LiveFaceMetrics(),
+    faceStatusLabel: String = "",
 ) {
     if (!PracticeDebugConfig.SHOW_DEBUG_PANEL) return
 
     var expanded by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableIntStateOf(0) }
     val maxPanelHeight = (LocalConfiguration.current.screenHeightDp * 0.25f).dp
+    val showBody = visualAnalysisMode != VisualAnalysisMode.FACE_ONLY
+    val showFace = visualAnalysisMode != VisualAnalysisMode.BODY_ONLY
+    val tabs = buildList {
+        if (showBody) add("Corpo")
+        if (showFace) add("Viso")
+        add("Audio")
+    }
 
     Surface(
         modifier = modifier.fillMaxWidth(0.92f),
@@ -89,6 +101,8 @@ fun PracticeDebugPanel(
                             poseStatusLabel = poseStatusLabel,
                             bodyMetrics = bodyMetrics,
                             audioDebug = audioDebug,
+                            faceStatusLabel = faceStatusLabel,
+                            showFace = showFace,
                         )
                     }
                 }
@@ -102,31 +116,28 @@ fun PracticeDebugPanel(
             AnimatedVisibility(visible = expanded) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     TabRow(
-                        selectedTabIndex = selectedTab,
+                        selectedTabIndex = selectedTab.coerceIn(0, tabs.lastIndex),
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0f),
                         contentColor = MaterialTheme.colorScheme.onSurface,
                         indicator = { tabPositions ->
                             TabRowDefaults.SecondaryIndicator(
-                                modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                                modifier = Modifier.tabIndicatorOffset(
+                                    tabPositions[selectedTab.coerceIn(0, tabs.lastIndex)],
+                                ),
                                 color = MaterialTheme.colorScheme.primary,
                             )
                         },
                         divider = {},
                     ) {
-                        Tab(
-                            selected = selectedTab == 0,
-                            onClick = { selectedTab = 0 },
-                            text = {
-                                Text("Corpo", style = MaterialTheme.typography.labelMedium)
-                            },
-                        )
-                        Tab(
-                            selected = selectedTab == 1,
-                            onClick = { selectedTab = 1 },
-                            text = {
-                                Text("Audio", style = MaterialTheme.typography.labelMedium)
-                            },
-                        )
+                        tabs.forEachIndexed { index, title ->
+                            Tab(
+                                selected = selectedTab == index,
+                                onClick = { selectedTab = index },
+                                text = {
+                                    Text(title, style = MaterialTheme.typography.labelMedium)
+                                },
+                            )
+                        }
                     }
 
                     Column(
@@ -137,14 +148,17 @@ fun PracticeDebugPanel(
                             .padding(top = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
-                        if (selectedTab == 0) {
-                            BodyDebugContent(
+                        when (tabs.getOrNull(selectedTab)) {
+                            "Corpo" -> BodyDebugContent(
                                 poseStatus = poseStatus,
                                 poseStatusLabel = poseStatusLabel,
                                 metrics = bodyMetrics,
                             )
-                        } else {
-                            AudioDebugContent(debug = audioDebug)
+                            "Viso" -> FaceDebugContent(
+                                faceStatusLabel = faceStatusLabel,
+                                metrics = faceMetrics,
+                            )
+                            else -> AudioDebugContent(debug = audioDebug)
                         }
                     }
                 }
@@ -158,6 +172,8 @@ private fun CollapsedSummary(
     poseStatusLabel: String,
     bodyMetrics: LiveBodyMetrics,
     audioDebug: LiveAudioDebug,
+    faceStatusLabel: String = "",
+    showFace: Boolean = false,
 ) {
     val hands = visibleHandsLabel(bodyMetrics)
     val speech = if (audioDebug.isSpeech) "sì" else "no"
@@ -165,6 +181,10 @@ private fun CollapsedSummary(
     val captured = formatDurationMmSs(audioDebug.capturedDurationMs)
     Text(
         text = buildString {
+            if (showFace && faceStatusLabel.isNotBlank()) {
+                append(shortPoseLabel(faceStatusLabel))
+                append(" · ")
+            }
             append(shortPoseLabel(poseStatusLabel))
             append(" · torso ")
             append(if (bodyMetrics.torsoValid) "ok" else "no")
@@ -184,6 +204,23 @@ private fun CollapsedSummary(
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
     )
+}
+
+@Composable
+private fun FaceDebugContent(
+    faceStatusLabel: String,
+    metrics: LiveFaceMetrics,
+) {
+    DebugLine("Stato viso", faceStatusLabel)
+    DebugLine("Confidenza", "%.2f".format(metrics.confidence))
+    DebugLine("Validità", metrics.validityReason.name)
+    DebugLine("Sguardo", metrics.gazeState.name)
+    DebugLine("Scala viso", metrics.faceScale?.let { "%.3f".format(it) } ?: "—")
+    DebugLine("Yaw rel", metrics.relativeYawDeg?.let { "%.1f°".format(it) } ?: "—")
+    DebugLine("Pitch rel", metrics.relativePitchDeg?.let { "%.1f°".format(it) } ?: "—")
+    DebugLine("Roll rel", metrics.relativeRollDeg?.let { "%.1f°".format(it) } ?: "—")
+    DebugLine("Iris S H/V", "${metrics.leftIrisHorizontalRatio ?: "—"} / ${metrics.leftIrisVerticalRatio ?: "—"}")
+    DebugLine("Iris D H/V", "${metrics.rightIrisHorizontalRatio ?: "—"} / ${metrics.rightIrisVerticalRatio ?: "—"}")
 }
 
 @Composable

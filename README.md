@@ -6,12 +6,11 @@ Orato è un'app Android nativa che funziona come coach personale per allenare la
 
 L'utente sceglie uno scenario:
 
-* presentazione di lavoro;
-* colloquio;
+* presentazione davanti al pubblico;
 * esame universitario;
-* conversazione.
+* videochiamata online.
 
-L'app avvia la fotocamera e invita l'utente a parlare per 90 secondi. Al termine della sessione genera un report su linguaggio del corpo, voce e contenuto del discorso.
+L'app avvia la fotocamera e invita l'utente a parlare per 90 secondi. Al termine della sessione genera un report su linguaggio del corpo (presentazione), presenza in video e sguardo (esame / videochiamata), voce e ritmo del discorso.
 
 ## Tecnologie
 

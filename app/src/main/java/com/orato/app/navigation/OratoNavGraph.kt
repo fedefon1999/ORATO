@@ -13,8 +13,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.orato.app.domain.model.Scenario
+import com.orato.app.domain.model.VisualAnalysisMapping
+import com.orato.app.face.PendingFaceCalibration
 import com.orato.app.report.PendingCompletedReport
 import com.orato.app.report.ReportPreparationCoordinator
+import com.orato.app.ui.calibration.FaceCalibrationScreen
 import com.orato.app.ui.home.HomeScreen
 import com.orato.app.ui.practice.PracticeScreen
 import com.orato.app.ui.report.FinalReportScreen
@@ -47,9 +50,41 @@ fun OratoNavGraph(
         composable(OratoRoutes.SCENARIO_SELECTION) {
             ScenarioSelectionScreen(
                 onScenarioSelected = { scenario ->
-                    navController.navigate(OratoRoutes.practice(scenario.routeArg))
+                    if (VisualAnalysisMapping.requiresFaceCalibration(scenario)) {
+                        navController.navigate(OratoRoutes.faceCalibration(scenario.routeArg))
+                    } else {
+                        PendingFaceCalibration.clear()
+                        navController.navigate(OratoRoutes.practice(scenario.routeArg))
+                    }
                 },
                 onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(
+            route = OratoRoutes.FACE_CALIBRATION,
+            arguments = listOf(
+                navArgument("scenario") { type = NavType.StringType },
+            ),
+        ) { entry ->
+            val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
+            val scenario = Scenario.fromRouteArg(scenarioArg)
+            if (scenario == null) {
+                RedirectUnknownScenario(navController)
+                return@composable
+            }
+            FaceCalibrationScreen(
+                scenario = scenario,
+                onCalibrationComplete = {
+                    navController.navigate(OratoRoutes.practice(scenario.routeArg)) {
+                        popUpTo(OratoRoutes.FACE_CALIBRATION) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+                onCancel = {
+                    PendingFaceCalibration.clear()
+                    navController.popBackStack()
+                },
             )
         }
 
@@ -61,9 +96,16 @@ fun OratoNavGraph(
         ) { entry ->
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
+            if (scenario == null) {
+                RedirectUnknownScenario(navController)
+                return@composable
+            }
             PracticeScreen(
                 scenario = scenario,
-                onExit = { navController.popBackStack() },
+                onExit = {
+                    PendingFaceCalibration.clear()
+                    navController.popBackStack()
+                },
                 onSessionEnded = { nav ->
                     navController.navigate(
                         OratoRoutes.reportPreparation(scenario.routeArg, nav.sessionId),
@@ -84,6 +126,10 @@ fun OratoNavGraph(
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val sessionId = entry.arguments?.getString("sessionId").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
+            if (scenario == null) {
+                RedirectUnknownScenario(navController)
+                return@composable
+            }
 
             ReportPreparationScreen(
                 sessionId = sessionId,
@@ -96,7 +142,7 @@ fun OratoNavGraph(
                 onCancelled = {
                     reportPrep.clear()
                     PendingCompletedReport.clear()
-                    navController.popBackStack(OratoRoutes.practice(scenarioArg), inclusive = false)
+                    navController.popBackStack(OratoRoutes.practice(scenario.routeArg), inclusive = false)
                 },
                 onFailedHome = {
                     reportPrep.clear()
@@ -117,6 +163,10 @@ fun OratoNavGraph(
         ) { entry ->
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
+            if (scenario == null) {
+                RedirectUnknownScenario(navController)
+                return@composable
+            }
             val liveReport by PendingCompletedReport.report.collectAsStateWithLifecycle()
             val report = liveReport
 
@@ -139,13 +189,33 @@ fun OratoNavGraph(
                     onRepeat = {
                         PendingCompletedReport.clear()
                         reportPrep.clear()
-                        navController.navigate(OratoRoutes.practice(scenario.routeArg)) {
-                            popUpTo(OratoRoutes.practice(scenario.routeArg)) { inclusive = true }
+                        PendingFaceCalibration.clear()
+                        val dest = if (VisualAnalysisMapping.requiresFaceCalibration(scenario)) {
+                            OratoRoutes.faceCalibration(scenario.routeArg)
+                        } else {
+                            OratoRoutes.practice(scenario.routeArg)
+                        }
+                        navController.navigate(dest) {
+                            popUpTo(OratoRoutes.HOME) { inclusive = false }
                             launchSingleTop = true
                         }
                     },
                 )
             }
+        }
+    }
+}
+
+/**
+ * Unknown or removed scenario route args never start a session.
+ * Returns the user to scenario selection without crashing.
+ */
+@Composable
+private fun RedirectUnknownScenario(navController: NavHostController) {
+    LaunchedEffect(Unit) {
+        navController.navigate(OratoRoutes.destinationForUnknownScenario()) {
+            popUpTo(OratoRoutes.HOME) { inclusive = false }
+            launchSingleTop = true
         }
     }
 }

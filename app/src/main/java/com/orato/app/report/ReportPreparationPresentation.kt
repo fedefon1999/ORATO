@@ -9,6 +9,7 @@ object ReportPreparationPresentation {
         when (stage) {
             ReportPreparationStage.FINALIZING_RECORDING -> "Salvataggio della sessione…"
             ReportPreparationStage.FINALIZING_BODY_ANALYSIS -> "Completamento dell’analisi del corpo…"
+            ReportPreparationStage.FINALIZING_FACE_ANALYSIS -> "Completamento dell’analisi del viso…"
             ReportPreparationStage.FINALIZING_VOICE_ANALYSIS -> "Completamento dell’analisi della voce…"
             ReportPreparationStage.PREPARING_AUDIO -> "Preparazione dell’audio…"
             ReportPreparationStage.ANALYZING_RHYTHM -> "Analisi del ritmo e della fluidità…"
