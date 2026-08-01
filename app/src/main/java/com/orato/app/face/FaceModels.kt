@@ -70,6 +70,8 @@ data class LiveFaceMetrics(
     val validityReason: FaceValidityReason = FaceValidityReason.NO_FACE,
     val confidence: Float = 0f,
     val faceScale: Float? = null,
+    val faceCenterX: Float? = null,
+    val faceCenterY: Float? = null,
     val relativeYawDeg: Float? = null,
     val relativePitchDeg: Float? = null,
     val relativeRollDeg: Float? = null,

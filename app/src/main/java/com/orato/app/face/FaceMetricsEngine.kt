@@ -2,10 +2,25 @@ package com.orato.app.face
 
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 
 /**
- * Session face metrics: framing, gaze, head movement, optional eye closure.
- * Thread-safe for off-main analysis callbacks.
+ * Duration-based face session metrics.
+ *
+ * ## Denominators (documented)
+ *
+ * | Metric | Numerator | Denominator |
+ * |--------|-----------|-------------|
+ * | Face detected % | facePresentDurationMs | visualSessionDurationMs |
+ * | Valid tracking % | validTrackingDurationMs | visualSessionDurationMs |
+ * | Centered face % | centeredFaceDurationMs | validFramingObservationDurationMs |
+ * | Toward-camera % | towardCameraDurationMs | validGazeTrackingDurationMs |
+ * | Head centered % | centeredHeadDurationMs | validTrackingDurationMs |
+ *
+ * All durations use **capture timestamps**. Frame counts never drive user-facing %.
+ *
+ * Stale gaps (>[FaceMetricsConfig.STALE_RESULT_MS]): attribute at most STALE_RESULT_MS
+ * to the previous state; remainder → unavailableVisualTrackingDurationMs.
  */
 class FaceMetricsEngine {
     private val config = FaceMetricsConfig
@@ -15,22 +30,25 @@ class FaceMetricsEngine {
     private var accumulating = false
     private var released = false
     private var calibration: FaceCalibrationProfile? = null
+    private var sessionId: Long = 0L
 
     private var sessionStartMs: Long = 0L
-    private var lastTimestampMs: Long = 0L
+    private var lastAcceptedCaptureMs: Long = 0L
+    private var sessionEndMs: Long = 0L
 
-    private var totalFrames = 0
-    private var facePresentFrames = 0
-    private var validTrackingFrames = 0
-    private var centeredFrames = 0
-    private var tooCloseMs = 0L
-    private var tooFarMs = 0L
-    private var outOfFrameEvents = 0
-    private var wasOutOfFrame = true
+    // Duration accumulators (ms)
+    private var visualSessionDurationMs = 0L
+    private var facePresentDurationMs = 0L
+    private var validTrackingDurationMs = 0L
+    private var validFramingObservationDurationMs = 0L
+    private var centeredFaceDurationMs = 0L
+    private var tooCloseDurationMs = 0L
+    private var tooFarDurationMs = 0L
+    private var unavailableVisualTrackingDurationMs = 0L
 
-    private var validGazeTrackingMs = 0L
-    private var unavailableGazeTrackingMs = 0L
-    private var towardCameraMs = 0L
+    private var validGazeTrackingDurationMs = 0L
+    private var unavailableGazeTrackingDurationMs = 0L
+    private var towardCameraDurationMs = 0L
     private var currentTowardMs = 0L
     private var longestTowardMs = 0L
     private var currentAwayMs = 0L
@@ -39,7 +57,7 @@ class FaceMetricsEngine {
     private var longestAwayMs = 0L
     private var awayCounted = false
 
-    private var centeredHeadFrames = 0
+    private var centeredHeadDurationMs = 0L
     private var largeYawCount = 0
     private var largePitchCount = 0
     private var largeRollCount = 0
@@ -74,15 +92,43 @@ class FaceMetricsEngine {
 
     private var longestValidTrackingMs = 0L
     private var currentValidTrackingMs = 0L
+    private var outOfFrameEvents = 0
+    private var wasOutOfFrame = true
+
+    private var lastLive: LiveFaceMetrics = LiveFaceMetrics()
+    private var lastStateForDuration: DurationState = DurationState.UNAVAILABLE
 
     @Volatile
     private var latestLive: LiveFaceMetrics = LiveFaceMetrics()
 
+    @Volatile
+    var duplicateTimestampRejections: Long = 0L
+        private set
+
+    @Volatile
+    var outOfOrderTimestampRejections: Long = 0L
+        private set
+
+    @Volatile
+    var staleSessionRejections: Long = 0L
+        private set
+
+    private enum class DurationState {
+        FACE_ABSENT,
+        INVALID_TRACKING,
+        VALID_TRACKING,
+        UNAVAILABLE,
+    }
+
     fun liveMetrics(): LiveFaceMetrics = latestLive
 
     fun setCalibration(profile: FaceCalibrationProfile?) {
+        synchronized(lock) { calibration = profile }
+    }
+
+    fun beginSession(id: Long) {
         synchronized(lock) {
-            calibration = profile
+            sessionId = id
         }
     }
 
@@ -97,7 +143,16 @@ class FaceMetricsEngine {
     }
 
     fun stopAccumulation() {
+        synchronized(lock) { accumulating = false }
+    }
+
+    fun finalizeAt(sessionEndCaptureMs: Long) {
         synchronized(lock) {
+            if (lastAcceptedCaptureMs > 0L && sessionEndCaptureMs > lastAcceptedCaptureMs) {
+                applyInterval(lastAcceptedCaptureMs, sessionEndCaptureMs, lastLive, lastStateForDuration)
+                lastAcceptedCaptureMs = sessionEndCaptureMs
+            }
+            sessionEndMs = sessionEndCaptureMs
             accumulating = false
         }
     }
@@ -112,55 +167,78 @@ class FaceMetricsEngine {
         }
     }
 
-    fun processFrame(frame: FaceFrame): LiveFaceMetrics {
+    fun processFrame(frame: FaceFrame, frameSessionId: Long = sessionId): LiveFaceMetrics {
         synchronized(lock) {
             if (released) return latestLive
+            if (frameSessionId != sessionId && sessionId != 0L) {
+                staleSessionRejections++
+                return latestLive
+            }
+
+            val captureMs = frame.timestampMs
+            if (lastAcceptedCaptureMs > 0L) {
+                when {
+                    captureMs == lastAcceptedCaptureMs -> {
+                        duplicateTimestampRejections++
+                        return latestLive
+                    }
+                    captureMs < lastAcceptedCaptureMs -> {
+                        outOfOrderTimestampRejections++
+                        return latestLive
+                    }
+                }
+            }
+
             val profile = calibration
             val live = evaluateLive(frame, profile)
             latestLive = live
 
-            if (!accumulating) return live
-
-            val dt = if (lastTimestampMs > 0L) {
-                (frame.timestampMs - lastTimestampMs).coerceAtLeast(0L)
-            } else {
-                0L
+            if (!accumulating) {
+                lastLive = live
+                return live
             }
-            if (sessionStartMs == 0L) sessionStartMs = frame.timestampMs
-            lastTimestampMs = frame.timestampMs
 
-            totalFrames++
-            if (frame.facePresent) facePresentFrames++
+            if (sessionStartMs == 0L) {
+                sessionStartMs = captureMs
+                lastAcceptedCaptureMs = captureMs
+                lastLive = live
+                lastStateForDuration = stateOf(live, frame)
+                return live
+            }
 
-            val framingValid = live.validTracking
-            if (framingValid) {
-                validTrackingFrames++
-                currentValidTrackingMs += dt
-                longestValidTrackingMs = max(longestValidTrackingMs, currentValidTrackingMs)
-                if (isCentered(frame)) centeredFrames++
-                if (wasOutOfFrame) {
-                    // re-entered
-                }
-                wasOutOfFrame = false
+            val prevTs = lastAcceptedCaptureMs
+            val gap = captureMs - prevTs
+            if (gap > config.STALE_RESULT_MS) {
+                // Attribute at most STALE_RESULT_MS to previous state; remainder unavailable.
+                val reliableEnd = prevTs + config.STALE_RESULT_MS
+                applyInterval(prevTs, reliableEnd, lastLive, lastStateForDuration)
+                unavailableVisualTrackingDurationMs += captureMs - reliableEnd
+                unavailableGazeTrackingDurationMs += captureMs - reliableEnd
+                visualSessionDurationMs += gap
             } else {
+                applyInterval(prevTs, captureMs, lastLive, lastStateForDuration)
+            }
+
+            lastAcceptedCaptureMs = captureMs
+            lastLive = live
+            lastStateForDuration = stateOf(live, frame)
+
+            // Event counters (not percentages)
+            if (!live.validTracking) {
                 currentValidTrackingMs = 0L
-                if (frame.facePresent) {
-                    val scale = frame.faceScale
-                    if (scale != null) {
-                        if (scale > config.MAX_FACE_SCALE) tooCloseMs += dt
-                        if (scale < config.MIN_FACE_SCALE) tooFarMs += dt
-                    }
-                }
                 if (!wasOutOfFrame && (!frame.facePresent || live.validityReason == FaceValidityReason.FACE_OFF_CENTER)) {
                     outOfFrameEvents++
                 }
-                wasOutOfFrame = !frame.facePresent || live.validityReason == FaceValidityReason.FACE_OFF_CENTER ||
+                wasOutOfFrame = !frame.facePresent ||
+                    live.validityReason == FaceValidityReason.FACE_OFF_CENTER ||
                     live.validityReason == FaceValidityReason.NO_FACE
+            } else {
+                wasOutOfFrame = false
             }
 
-            accumulateGaze(live.gazeState, dt)
-            accumulateHead(frame, profile, live, dt)
-            accumulateEyeClosure(frame, dt)
+            accumulateGazeEvents(live.gazeState, min(gap, config.STALE_RESULT_MS).coerceAtLeast(0L))
+            accumulateHead(frame, live, min(gap, config.STALE_RESULT_MS).coerceAtLeast(0L))
+            accumulateEyeClosure(frame, min(gap, config.STALE_RESULT_MS).coerceAtLeast(0L))
 
             return live
         }
@@ -168,58 +246,50 @@ class FaceMetricsEngine {
 
     fun buildReport(): SessionFaceReport {
         synchronized(lock) {
-            val total = totalFrames.coerceAtLeast(1)
-            val presencePct = 100f * facePresentFrames / total
-            val validPct = 100f * validTrackingFrames / total
-            val centeredPct = if (validTrackingFrames > 0) {
-                100f * centeredFrames / validTrackingFrames
-            } else {
-                null
+            val sessionMs = visualSessionDurationMs.coerceAtLeast(1L)
+            fun pct(num: Long, den: Long): Float? {
+                if (den <= 0L) return null
+                return ((100.0 * num / den).coerceIn(0.0, 100.0)).toFloat()
             }
-            val centeredHeadPct = if (validTrackingFrames > 0) {
-                100f * centeredHeadFrames / validTrackingFrames
-            } else {
-                null
-            }
-            val towardPct = if (validGazeTrackingMs > 0L) {
-                100.0 * towardCameraMs / validGazeTrackingMs
-            } else {
-                null
-            }
+
+            val framing = FaceFramingReportData(
+                faceDetectedPercent = pct(facePresentDurationMs, sessionMs),
+                validTrackingPercent = pct(validTrackingDurationMs, sessionMs),
+                centeredFacePercent = pct(centeredFaceDurationMs, validFramingObservationDurationMs),
+                tooCloseDurationMs = tooCloseDurationMs,
+                tooFarDurationMs = tooFarDurationMs,
+                outOfFrameEventCount = outOfFrameEvents,
+                longestValidTrackingMs = longestValidTrackingMs,
+                insufficientData = facePresentDurationMs == 0L,
+                // Denominators for diagnostics / tests
+                visualSessionDurationMs = visualSessionDurationMs,
+                validFramingObservationDurationMs = validFramingObservationDurationMs,
+                unavailableVisualTrackingDurationMs = unavailableVisualTrackingDurationMs,
+            )
+            val towardPct = pct(towardCameraDurationMs, validGazeTrackingDurationMs)
             val avgAway = if (significantAwayCount > 0) {
                 significantAwayTotalMs.toDouble() / significantAwayCount
             } else {
                 null
             }
+            val gaze = CameraGazeReportData(
+                towardCameraPercent = towardPct,
+                longestTowardCameraMs = longestTowardMs,
+                significantAwayCount = significantAwayCount,
+                averageSignificantAwayMs = avgAway?.toLong(),
+                longestAwayMs = longestAwayMs,
+                validGazeTrackingMs = validGazeTrackingDurationMs,
+                unavailableGazeTrackingMs = unavailableGazeTrackingDurationMs,
+                insufficientData = validGazeTrackingDurationMs == 0L,
+                explanation = CameraGazeReportData.DEFAULT_EXPLANATION,
+            )
             val avgSpeed = if (angularSpeedSamples > 0) {
                 (angularSpeedSum / angularSpeedSamples).toFloat()
             } else {
                 null
             }
-
-            val framing = FaceFramingReportData(
-                faceDetectedPercent = presencePct,
-                validTrackingPercent = validPct,
-                centeredFacePercent = centeredPct,
-                tooCloseDurationMs = tooCloseMs,
-                tooFarDurationMs = tooFarMs,
-                outOfFrameEventCount = outOfFrameEvents,
-                longestValidTrackingMs = longestValidTrackingMs,
-                insufficientData = facePresentFrames == 0,
-            )
-            val gaze = CameraGazeReportData(
-                towardCameraPercent = towardPct?.toFloat(),
-                longestTowardCameraMs = longestTowardMs,
-                significantAwayCount = significantAwayCount,
-                averageSignificantAwayMs = avgAway?.toLong(),
-                longestAwayMs = longestAwayMs,
-                validGazeTrackingMs = validGazeTrackingMs,
-                unavailableGazeTrackingMs = unavailableGazeTrackingMs,
-                insufficientData = validGazeTrackingMs == 0L,
-                explanation = CameraGazeReportData.DEFAULT_EXPLANATION,
-            )
             val head = HeadMovementReportData(
-                centeredHeadPercent = centeredHeadPct,
+                centeredHeadPercent = pct(centeredHeadDurationMs, validTrackingDurationMs),
                 largeHorizontalTurnCount = largeYawCount,
                 largeVerticalMovementCount = largePitchCount,
                 lateralTiltCount = largeRollCount,
@@ -227,7 +297,7 @@ class FaceMetricsEngine {
                 peakAngularSpeedDegPerSec = peakAngularSpeed.takeIf { angularSpeedSamples > 0 },
                 meaningfulDirectionChanges = directionChanges,
                 longestStableHeadMs = longestStableMs,
-                insufficientData = validTrackingFrames == 0,
+                insufficientData = validTrackingDurationMs == 0L,
             )
             val eye = if (config.EYE_CLOSURE_METRICS_ENABLED) {
                 EyeClosureReportData(
@@ -239,14 +309,89 @@ class FaceMetricsEngine {
             } else {
                 null
             }
-
-            return SessionFaceReport(
-                framing = framing,
-                gaze = gaze,
-                headMovement = head,
-                eyeClosure = eye,
-            )
+            return SessionFaceReport(framing = framing, gaze = gaze, headMovement = head, eyeClosure = eye)
         }
+    }
+
+    private fun applyInterval(
+        fromMs: Long,
+        toMs: Long,
+        live: LiveFaceMetrics,
+        state: DurationState,
+    ) {
+        val dt = (toMs - fromMs).coerceAtLeast(0L)
+        if (dt == 0L) return
+        visualSessionDurationMs += dt
+        when (state) {
+            DurationState.UNAVAILABLE -> {
+                unavailableVisualTrackingDurationMs += dt
+                unavailableGazeTrackingDurationMs += dt
+            }
+            DurationState.FACE_ABSENT -> {
+                // still part of session; not present
+            }
+            DurationState.INVALID_TRACKING -> {
+                if (live.facePresent || lastLive.facePresent) {
+                    facePresentDurationMs += dt
+                }
+                val scale = live.faceScale
+                if (scale != null) {
+                    if (scale > config.MAX_FACE_SCALE) tooCloseDurationMs += dt
+                    if (scale < config.MIN_FACE_SCALE) tooFarDurationMs += dt
+                }
+                when (live.gazeState) {
+                    CameraGazeState.INVALID -> unavailableGazeTrackingDurationMs += dt
+                    else -> { /* invalid tracking: gaze not counted as away */ }
+                }
+            }
+            DurationState.VALID_TRACKING -> {
+                facePresentDurationMs += dt
+                validTrackingDurationMs += dt
+                validFramingObservationDurationMs += dt
+                currentValidTrackingMs += dt
+                longestValidTrackingMs = max(longestValidTrackingMs, currentValidTrackingMs)
+                if (isCenteredFromLive(live)) {
+                    centeredFaceDurationMs += dt
+                }
+                if (isHeadCentered(live)) {
+                    centeredHeadDurationMs += dt
+                }
+                when (live.gazeState) {
+                    CameraGazeState.TOWARD_CAMERA -> {
+                        validGazeTrackingDurationMs += dt
+                        towardCameraDurationMs += dt
+                    }
+                    CameraGazeState.AWAY -> {
+                        validGazeTrackingDurationMs += dt
+                    }
+                    CameraGazeState.INVALID -> {
+                        unavailableGazeTrackingDurationMs += dt
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stateOf(live: LiveFaceMetrics, frame: FaceFrame): DurationState = when {
+        !frame.facePresent -> DurationState.FACE_ABSENT
+        live.validTracking -> DurationState.VALID_TRACKING
+        else -> DurationState.INVALID_TRACKING
+    }
+
+    private fun isCenteredFromLive(live: LiveFaceMetrics): Boolean {
+        val x = live.faceCenterX ?: return false
+        val y = live.faceCenterY ?: return false
+        return x in config.CENTER_X_MIN..config.CENTER_X_MAX &&
+            y in config.CENTER_Y_MIN..config.CENTER_Y_MAX
+    }
+
+    private fun isHeadCentered(live: LiveFaceMetrics): Boolean {
+        val yaw = live.relativeYawDeg ?: return false
+        val pitch = live.relativePitchDeg ?: return false
+        val roll = live.relativeRollDeg ?: 0f
+        return abs(yaw) <= config.HEAD_CENTERED_YAW_DEG &&
+            abs(pitch) <= config.HEAD_CENTERED_PITCH_DEG &&
+            abs(roll) <= config.HEAD_CENTERED_ROLL_DEG
     }
 
     private fun evaluateLive(frame: FaceFrame, profile: FaceCalibrationProfile?): LiveFaceMetrics {
@@ -285,7 +430,12 @@ class FaceMetricsEngine {
                 validityReason = FaceValidityReason.FACE_TOO_LARGE,
             )
         }
-        if (!isCentered(frame)) {
+        val cx = frame.faceCenterX
+        val cy = frame.faceCenterY
+        if (cx == null || cy == null ||
+            cx !in config.CENTER_X_MIN..config.CENTER_X_MAX ||
+            cy !in config.CENTER_Y_MIN..config.CENTER_Y_MAX
+        ) {
             return LiveFaceMetrics(
                 facePresent = true,
                 confidence = frame.confidence,
@@ -296,7 +446,6 @@ class FaceMetricsEngine {
         if (frame.leftEyeOpen == false && frame.rightEyeOpen == false) {
             return LiveFaceMetrics(
                 facePresent = true,
-                validTracking = false,
                 confidence = frame.confidence,
                 faceScale = scale,
                 leftEyeOpen = false,
@@ -326,8 +475,7 @@ class FaceMetricsEngine {
         val rightH = delta(frame.rightIrisHorizontalRatio, profile?.baselineRightIrisHorizontalRatio)
         val rightV = delta(frame.rightIrisVerticalRatio, profile?.baselineRightIrisVerticalRatio)
 
-        val irisOk = leftH != null || rightH != null
-        if (!irisOk) {
+        if (leftH == null && rightH == null) {
             return LiveFaceMetrics(
                 facePresent = true,
                 confidence = frame.confidence,
@@ -362,6 +510,8 @@ class FaceMetricsEngine {
             validityReason = FaceValidityReason.OK,
             confidence = frame.confidence,
             faceScale = scale,
+            faceCenterX = cx,
+            faceCenterY = cy,
             relativeYawDeg = relYaw,
             relativePitchDeg = relPitch,
             relativeRollDeg = relRoll,
@@ -375,11 +525,9 @@ class FaceMetricsEngine {
         )
     }
 
-    private fun accumulateGaze(state: CameraGazeState, dt: Long) {
+    private fun accumulateGazeEvents(state: CameraGazeState, dt: Long) {
         when (state) {
             CameraGazeState.TOWARD_CAMERA -> {
-                validGazeTrackingMs += dt
-                towardCameraMs += dt
                 currentTowardMs += dt
                 longestTowardMs = max(longestTowardMs, currentTowardMs)
                 finalizeAwayIfNeeded()
@@ -387,7 +535,6 @@ class FaceMetricsEngine {
                 awayCounted = false
             }
             CameraGazeState.AWAY -> {
-                validGazeTrackingMs += dt
                 currentAwayMs += dt
                 longestAwayMs = max(longestAwayMs, currentAwayMs)
                 currentTowardMs = 0L
@@ -397,7 +544,6 @@ class FaceMetricsEngine {
                 }
             }
             CameraGazeState.INVALID -> {
-                unavailableGazeTrackingMs += dt
                 finalizeAwayIfNeeded()
                 currentTowardMs = 0L
                 currentAwayMs = 0L
@@ -412,12 +558,7 @@ class FaceMetricsEngine {
         }
     }
 
-    private fun accumulateHead(
-        frame: FaceFrame,
-        profile: FaceCalibrationProfile?,
-        live: LiveFaceMetrics,
-        dt: Long,
-    ) {
+    private fun accumulateHead(frame: FaceFrame, live: LiveFaceMetrics, dt: Long) {
         val yaw = live.relativeYawDeg ?: return
         val pitch = live.relativePitchDeg ?: return
         val roll = live.relativeRollDeg ?: 0f
@@ -437,13 +578,6 @@ class FaceMetricsEngine {
             smoothedYaw = alpha * yaw + (1 - alpha) * smoothedYaw
             smoothedPitch = alpha * pitch + (1 - alpha) * smoothedPitch
             smoothedRoll = alpha * roll + (1 - alpha) * smoothedRoll
-        }
-
-        if (abs(smoothedYaw) <= config.HEAD_CENTERED_YAW_DEG &&
-            abs(smoothedPitch) <= config.HEAD_CENTERED_PITCH_DEG &&
-            abs(smoothedRoll) <= config.HEAD_CENTERED_ROLL_DEG
-        ) {
-            centeredHeadFrames++
         }
 
         val dts = if (prevSmoothTs > 0L) {
@@ -554,13 +688,6 @@ class FaceMetricsEngine {
         }
     }
 
-    private fun isCentered(frame: FaceFrame): Boolean {
-        val x = frame.faceCenterX ?: return false
-        val y = frame.faceCenterY ?: return false
-        return x in config.CENTER_X_MIN..config.CENTER_X_MAX &&
-            y in config.CENTER_Y_MIN..config.CENTER_Y_MAX
-    }
-
     private fun relativeOrNull(current: Float?, baseline: Float?): Float? {
         if (current == null) return null
         if (baseline == null) return current
@@ -580,18 +707,19 @@ class FaceMetricsEngine {
 
     private fun clearLocked() {
         sessionStartMs = 0L
-        lastTimestampMs = 0L
-        totalFrames = 0
-        facePresentFrames = 0
-        validTrackingFrames = 0
-        centeredFrames = 0
-        tooCloseMs = 0L
-        tooFarMs = 0L
-        outOfFrameEvents = 0
-        wasOutOfFrame = true
-        validGazeTrackingMs = 0L
-        unavailableGazeTrackingMs = 0L
-        towardCameraMs = 0L
+        lastAcceptedCaptureMs = 0L
+        sessionEndMs = 0L
+        visualSessionDurationMs = 0L
+        facePresentDurationMs = 0L
+        validTrackingDurationMs = 0L
+        validFramingObservationDurationMs = 0L
+        centeredFaceDurationMs = 0L
+        tooCloseDurationMs = 0L
+        tooFarDurationMs = 0L
+        unavailableVisualTrackingDurationMs = 0L
+        validGazeTrackingDurationMs = 0L
+        unavailableGazeTrackingDurationMs = 0L
+        towardCameraDurationMs = 0L
         currentTowardMs = 0L
         longestTowardMs = 0L
         currentAwayMs = 0L
@@ -599,7 +727,7 @@ class FaceMetricsEngine {
         significantAwayTotalMs = 0L
         longestAwayMs = 0L
         awayCounted = false
-        centeredHeadFrames = 0
+        centeredHeadDurationMs = 0L
         largeYawCount = 0
         largePitchCount = 0
         largeRollCount = 0
@@ -625,6 +753,13 @@ class FaceMetricsEngine {
         closureCounted = false
         longestValidTrackingMs = 0L
         currentValidTrackingMs = 0L
+        outOfFrameEvents = 0
+        wasOutOfFrame = true
+        lastStateForDuration = DurationState.UNAVAILABLE
+        lastLive = LiveFaceMetrics()
+        duplicateTimestampRejections = 0L
+        outOfOrderTimestampRejections = 0L
+        staleSessionRejections = 0L
     }
 }
 
@@ -637,6 +772,9 @@ data class FaceFramingReportData(
     val outOfFrameEventCount: Int,
     val longestValidTrackingMs: Long,
     val insufficientData: Boolean,
+    val visualSessionDurationMs: Long = 0L,
+    val validFramingObservationDurationMs: Long = 0L,
+    val unavailableVisualTrackingDurationMs: Long = 0L,
 )
 
 data class CameraGazeReportData(
