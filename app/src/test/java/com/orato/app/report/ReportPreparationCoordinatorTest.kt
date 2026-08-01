@@ -4,12 +4,15 @@ import com.orato.app.audio.AudioInputQuality
 import com.orato.app.audio.AudioRecordingState
 import com.orato.app.audio.AudioSessionMetrics
 import com.orato.app.audio.PauseBuckets
+import com.orato.app.audio.SessionWavRetention
 import com.orato.app.metrics.SessionBodyReport
 import com.orato.app.speech.FakeSpeechTranscriber
+import com.orato.app.speech.LinguisticUnavailableReason
 import com.orato.app.speech.SpeechConfig
 import com.orato.app.speech.SpeechTranscriber
 import com.orato.app.speech.TranscriptionResult
 import com.orato.app.speech.WhisperModelReadiness
+import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -17,15 +20,26 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 class FakeWhisperModelManager(
-    private val ready: Boolean = true,
+    private var ready: Boolean = true,
+    /** When true, [ensureReadyFromDisk] promotes to ready (simulates on-disk file check). */
+    private val promoteOnEnsureFromDisk: Boolean = false,
 ) : WhisperModelReadiness {
     override fun isReady(): Boolean = ready
+
+    override fun ensureReadyFromDisk(): Boolean {
+        if (promoteOnEnsureFromDisk) {
+            ready = true
+            return true
+        }
+        return isReady()
+    }
 }
 
 class ReportPreparationCoordinatorTest {
@@ -34,6 +48,13 @@ class ReportPreparationCoordinatorTest {
     val tempFolder = TemporaryFolder()
 
     private val clock = AtomicLong(1_000_000L)
+
+    /** Minimal WAV payload larger than the 44-byte header gate in runLinguistic. */
+    private fun validWav(name: String): File {
+        val wav = tempFolder.newFile(name)
+        wav.writeBytes(ByteArray(128) { 1 })
+        return wav
+    }
 
     private fun audio(
         speechMs: Long? = 60_000L,
@@ -66,8 +87,8 @@ class ReportPreparationCoordinatorTest {
     private fun coordinator(
         modelReady: Boolean = true,
         transcriber: SpeechTranscriber,
+        model: FakeWhisperModelManager = FakeWhisperModelManager(ready = modelReady),
     ): ReportPreparationCoordinator {
-        val model = FakeWhisperModelManager(ready = modelReady)
         return ReportPreparationCoordinator.forTests(
             modelManagerFactory = { model },
             transcriberFactory = { transcriber },
@@ -102,8 +123,7 @@ class ReportPreparationCoordinatorTest {
 
     @Test
     fun whisperSuccess_readyWithLinguisticAvailable() = runBlocking {
-        val wav = tempFolder.newFile("ok.wav")
-        wav.writeBytes(ByteArray(0))
+        val wav = validWav("ok.wav")
         val fake = FakeSpeechTranscriber(
             result = TranscriptionResult(
                 transcript = "cioè ciao mondo praticamente",
@@ -126,17 +146,19 @@ class ReportPreparationCoordinatorTest {
         assertTrue(ready.report.rhythmAndFluency.linguisticAvailable)
         assertNotNull(ready.report.rhythmAndFluency.wordCount)
         assertTrue(ready.report.rhythmAndFluency.wordCount!! > 0)
+        assertNotNull(ready.report.rhythmAndFluency.wordsPerMinute)
+        assertTrue(ready.report.rhythmAndFluency.wordsPerMinute!! > 0.0)
         assertNotNull(ready.report.rhythmAndFluency.discourseMarkers)
         assertTrue(ready.report.rhythmAndFluency.discourseMarkers!!.totalCount >= 2)
         assertFalse(ReportSection.RHYTHM_AND_FLUENCY in ready.report.unavailableSections)
         assertEquals(-20.0, ready.report.voice.meanSpeechDbfs!!, 1e-9)
         assertTrue(ready.report.body.session.hasInsufficientData)
+        assertNull(c.lastLinguisticDiagnostics?.reason)
     }
 
     @Test
     fun whisperFailure_readyWithLinguisticUnavailable_bodyVoicePreserved() = runBlocking {
-        val wav = tempFolder.newFile("fail.wav")
-        wav.writeBytes(ByteArray(0))
+        val wav = validWav("fail.wav")
         val fake = FakeSpeechTranscriber(fail = true)
         val c = coordinator(transcriber = fake)
         val body = SessionBodyReport.emptyInsufficient()
@@ -161,12 +183,12 @@ class ReportPreparationCoordinatorTest {
         assertEquals(audioMetrics.speechRatioPercent, ready.report.voice.speechRatioPercent)
         assertFalse(ready.report.voice.insufficientData)
         assertEquals(body.hasInsufficientData, ready.report.body.session.hasInsufficientData)
+        assertEquals(LinguisticUnavailableReason.INFERENCE_FAILED, c.lastLinguisticDiagnostics?.reason)
     }
 
     @Test
     fun duplicateStart_replacesOld_noStaleReady() = runBlocking {
-        val wav = tempFolder.newFile("dup.wav")
-        wav.writeBytes(ByteArray(0))
+        val wav = validWav("dup.wav")
         val slow = FakeSpeechTranscriber(
             result = TranscriptionResult("vecchia sessione cioè", "it", 5),
             delayMs = 2_000L,
@@ -215,8 +237,7 @@ class ReportPreparationCoordinatorTest {
 
     @Test
     fun staleSession_ignoredAfterCancel() = runBlocking {
-        val wav = tempFolder.newFile("stale.wav")
-        wav.writeBytes(ByteArray(0))
+        val wav = validWav("stale.wav")
         val slow = FakeSpeechTranscriber(
             result = TranscriptionResult("dovrebbe essere ignorata", "it", 5),
             delayMs = 1_500L,
@@ -242,8 +263,7 @@ class ReportPreparationCoordinatorTest {
 
     @Test
     fun cancellation_releasesTranscriber() = runBlocking {
-        val wav = tempFolder.newFile("cancel.wav")
-        wav.writeBytes(ByteArray(0))
+        val wav = validWav("cancel.wav")
         val slow = FakeSpeechTranscriber(
             result = TranscriptionResult("ciao", "it", 5),
             delayMs = 5_000L,
@@ -270,8 +290,7 @@ class ReportPreparationCoordinatorTest {
 
     @Test
     fun completedSessionReport_hasNoTranscriptField() = runBlocking {
-        val wav = tempFolder.newFile("no-tx.wav")
-        wav.writeBytes(ByteArray(0))
+        val wav = validWav("no-tx.wav")
         val fake = FakeSpeechTranscriber(
             result = TranscriptionResult("testo segreto della trascrizione", "it", 5),
         )
@@ -341,9 +360,9 @@ class ReportPreparationCoordinatorTest {
 
     @Test
     fun modelNotReady_linguisticUnavailable() = runBlocking {
-        val wav = tempFolder.newFile("nomodel.wav")
-        wav.writeBytes(ByteArray(0))
+        val wav = validWav("nomodel.wav")
         val fake = FakeSpeechTranscriber()
+        // ensureReadyFromDisk() == isReady() == false → MODEL_NOT_DOWNLOADED
         val c = coordinator(modelReady = false, transcriber = fake)
         c.start(
             scenarioName = "NoModel",
@@ -351,11 +370,153 @@ class ReportPreparationCoordinatorTest {
             body = SessionBodyReport.emptyInsufficient(),
             audio = audio(),
             wavFile = wav,
-            modelReady = true, // pipeline arg true, but manager.isReady() false
+            modelReady = true, // pipeline arg true, but manager.ensureReadyFromDisk() false
             sessionId = "no-model",
         )
         val ready = awaitReady(c)
         assertFalse(ready.report.rhythmAndFluency.linguisticAvailable)
         assertEquals(0, fake.transcribeCalls)
+        assertEquals(
+            LinguisticUnavailableReason.MODEL_NOT_DOWNLOADED,
+            c.lastLinguisticDiagnostics?.reason,
+        )
+    }
+
+    @Test
+    fun ensureReadyFromDisk_promotesNotReadyModel_linguisticAvailable() = runBlocking {
+        val wav = validWav("promote.wav")
+        val fake = FakeSpeechTranscriber(
+            result = TranscriptionResult("ciao mondo praticamente", "it", 5),
+        )
+        val model = FakeWhisperModelManager(ready = false, promoteOnEnsureFromDisk = true)
+        val c = coordinator(transcriber = fake, model = model)
+        c.start(
+            scenarioName = "Promote",
+            totalSessionDurationMs = 60_000L,
+            body = SessionBodyReport.emptyInsufficient(),
+            audio = audio(),
+            wavFile = wav,
+            modelReady = true,
+            sessionId = "promote",
+        )
+        val ready = awaitReady(c)
+        assertTrue(ready.report.rhythmAndFluency.linguisticAvailable)
+        assertTrue(fake.transcribeCalls >= 1)
+        assertTrue(model.isReady())
+        assertNull(c.lastLinguisticDiagnostics?.reason)
+    }
+
+    @Test
+    fun missingWav_linguisticUnavailableReason_wavNotFound() = runBlocking {
+        val fake = FakeSpeechTranscriber()
+        val c = coordinator(transcriber = fake)
+        c.start(
+            scenarioName = "NoWav",
+            totalSessionDurationMs = 60_000L,
+            body = SessionBodyReport.emptyInsufficient(),
+            audio = audio(),
+            wavFile = null,
+            modelReady = true,
+            sessionId = "no-wav",
+        )
+        val ready = awaitReady(c)
+        assertFalse(ready.report.rhythmAndFluency.linguisticAvailable)
+        assertEquals(0, fake.transcribeCalls)
+        assertEquals(LinguisticUnavailableReason.WAV_NOT_FOUND, c.lastLinguisticDiagnostics?.reason)
+    }
+
+    @Test
+    fun missingWavFileOnDisk_linguisticUnavailableReason_wavNotFound() = runBlocking {
+        val missing = File(tempFolder.root, "gone.wav")
+        assertFalse(missing.exists())
+        val fake = FakeSpeechTranscriber()
+        val c = coordinator(transcriber = fake)
+        c.start(
+            scenarioName = "GoneWav",
+            totalSessionDurationMs = 60_000L,
+            body = SessionBodyReport.emptyInsufficient(),
+            audio = audio(),
+            wavFile = missing,
+            modelReady = true,
+            sessionId = "gone-wav",
+        )
+        val ready = awaitReady(c)
+        assertFalse(ready.report.rhythmAndFluency.linguisticAvailable)
+        assertEquals(LinguisticUnavailableReason.WAV_NOT_FOUND, c.lastLinguisticDiagnostics?.reason)
+    }
+
+    @Test
+    fun emptyTranscript_linguisticUnavailableReason_emptyTranscript() = runBlocking {
+        val wav = validWav("empty-tx.wav")
+        val fake = FakeSpeechTranscriber(
+            result = TranscriptionResult(transcript = "   ", detectedLanguage = "it", processingDurationMs = 5),
+        )
+        val c = coordinator(transcriber = fake)
+        c.start(
+            scenarioName = "EmptyTx",
+            totalSessionDurationMs = 60_000L,
+            body = SessionBodyReport.emptyInsufficient(),
+            audio = audio(),
+            wavFile = wav,
+            modelReady = true,
+            sessionId = "empty-tx",
+        )
+        val ready = awaitReady(c)
+        assertFalse(ready.report.rhythmAndFluency.linguisticAvailable)
+        assertEquals(LinguisticUnavailableReason.EMPTY_TRANSCRIPT, c.lastLinguisticDiagnostics?.reason)
+    }
+
+    @Test
+    fun success_producesWordCountAndWpm() = runBlocking {
+        val wav = validWav("wpm.wav")
+        val fake = FakeSpeechTranscriber(
+            result = TranscriptionResult(
+                transcript = "uno due tre quattro cinque sei",
+                detectedLanguage = "it",
+                processingDurationMs = 5,
+            ),
+        )
+        val c = coordinator(transcriber = fake)
+        c.start(
+            scenarioName = "Wpm",
+            totalSessionDurationMs = 90_000L,
+            body = SessionBodyReport.emptyInsufficient(),
+            audio = audio(speechMs = 60_000L),
+            wavFile = wav,
+            modelReady = true,
+            sessionId = "wpm",
+        )
+        val ready = awaitReady(c)
+        assertTrue(ready.report.rhythmAndFluency.linguisticAvailable)
+        assertEquals(6, ready.report.rhythmAndFluency.wordCount)
+        assertNotNull(ready.report.rhythmAndFluency.wordsPerMinute)
+        assertEquals(6.0, ready.report.rhythmAndFluency.wordsPerMinute!!, 1e-9)
+    }
+
+    @Test
+    fun sessionWavRetention_retainDuringPipeline_releaseAfterReady() = runBlocking {
+        SessionWavRetention.clearAll()
+        val wav = validWav("retain.wav")
+        val fake = FakeSpeechTranscriber(
+            result = TranscriptionResult("ciao mondo", "it", 5),
+            delayMs = 500L,
+        )
+        val c = coordinator(transcriber = fake)
+        assertFalse(SessionWavRetention.isRetained(wav))
+        c.start(
+            scenarioName = "Retain",
+            totalSessionDurationMs = 60_000L,
+            body = SessionBodyReport.emptyInsufficient(),
+            audio = audio(),
+            wavFile = wav,
+            modelReady = true,
+            sessionId = "retain",
+        )
+        withTimeout(5_000L) {
+            while (!SessionWavRetention.isRetained(wav)) delay(10)
+        }
+        assertTrue(SessionWavRetention.isRetained(wav))
+        awaitReady(c)
+        assertFalse(SessionWavRetention.isRetained(wav))
     }
 }

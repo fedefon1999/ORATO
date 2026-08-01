@@ -619,9 +619,13 @@ class SpeechTranscriberFakeTest {
             SpeechConfig.METRICS_UNAVAILABLE_REPORT,
             SpeechReportPresentation.transcriptionStatusLabel(TranscriptionState.ModelUnavailable),
         )
+        assertEquals(
+            SpeechConfig.MODEL_NOT_DOWNLOADED_HINT,
+            SpeechReportPresentation.modelStatusLabel(WhisperModelState.NotDownloaded),
+        )
         assertTrue(
             SpeechReportPresentation.modelStatusLabel(WhisperModelState.NotDownloaded)
-                .contains("modello offline"),
+                .contains("Modello linguistico", ignoreCase = true),
         )
     }
 
