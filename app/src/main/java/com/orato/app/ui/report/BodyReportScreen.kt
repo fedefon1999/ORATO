@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -38,7 +37,6 @@ import com.orato.app.speech.SpeechConfig
 import com.orato.app.speech.SpeechIntelligenceMetrics
 import com.orato.app.speech.SpeechReportPresentation
 import com.orato.app.speech.SpeechSessionResult
-
 @Composable
 fun BodyReportScreen(
     scenario: Scenario,
@@ -81,7 +79,7 @@ fun BodyReportScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        SpeechSection(report.speech)
+        SpeechSection(speech = report.speech, audio = report.audio)
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -102,6 +100,11 @@ fun BodyReportScreen(
 
 @Composable
 private fun BodySection(report: SessionBodyReport) {
+    Text(
+        text = "Corpo",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onBackground,
+    )
     ReportPercentRow(
         label = "Presenza in camera",
         metric = report.cameraPresence,
@@ -136,7 +139,7 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         color = MaterialTheme.colorScheme.onBackground,
     )
     Text(
-        text = "Pause e volume dall’audio locale.",
+        text = "Volume e qualità dall’audio locale.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -164,13 +167,6 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         return
     }
 
-    val buckets = audio.pauseBuckets ?: PauseBuckets.empty()
-
-    Text(
-        text = "Sintesi",
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.onBackground,
-    )
     ReportLine(
         label = "Acquisizione",
         value = VoiceReportPresentation.acquisitionLabel(
@@ -178,26 +174,11 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         ),
     )
     ReportLine(
-        label = "Volume",
-        value = VoiceReportPresentation.volumeLabel(
-            VoiceReportPresentation.volumeSummary(audio),
-        ),
-    )
-    ReportLine(
-        label = "Pause lunghe",
-        value = VoiceReportPresentation.longPauseLabel(
-            VoiceReportPresentation.longPauseSummary(audio),
-        ),
-    )
-
-    Spacer(modifier = Modifier.height(4.dp))
-
-    ReportLine(
         label = "Durata catturata",
         value = formatDurationMs(audio.capturedDurationMs),
     )
     ReportLine(
-        label = "Rapporto di parlato",
+        label = "Percentuale di parlato",
         value = audio.speechRatioPercent?.let { "%.0f%%".format(it) } ?: "—",
     )
     if (audio.meanSpeechDbfs == null) {
@@ -214,41 +195,8 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         )
     }
     ReportLine(
-        label = "Variazione di volume",
+        label = "Variazione del volume",
         value = audio.volumeVariationStdDevDb?.let { "%.2f dB σ".format(it) } ?: "—",
-    )
-
-    Spacer(modifier = Modifier.height(4.dp))
-
-    Text(
-        text = "Pause",
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.onBackground,
-    )
-    Text(
-        text = VoiceReportPresentation.PAUSE_INTERPRETATION,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    ReportLine(
-        label = "Pause brevi",
-        value = buckets.briefCount.toString(),
-    )
-    ReportLine(
-        label = "Pause significative",
-        value = buckets.significantCount.toString(),
-    )
-    ReportLine(
-        label = "Pause lunghe",
-        value = buckets.longCount.toString(),
-    )
-    ReportLine(
-        label = "Durata mediana pausa",
-        value = audio.medianPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
-    )
-    ReportLine(
-        label = "Pausa più lunga",
-        value = audio.longestPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
     )
     ReportLine(
         label = "Clipping",
@@ -257,9 +205,12 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
 }
 
 @Composable
-private fun SpeechSection(speech: SpeechSessionResult) {
+private fun SpeechSection(
+    speech: SpeechSessionResult,
+    audio: AudioSessionMetrics,
+) {
     Text(
-        text = "Ritmo e trascrizione",
+        text = "Ritmo e fluidità",
         style = MaterialTheme.typography.titleLarge,
         color = MaterialTheme.colorScheme.onBackground,
     )
@@ -273,6 +224,7 @@ private fun SpeechSection(speech: SpeechSessionResult) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            PauseMetricsBlock(audio)
         }
         is SpeechSessionResult.Processing -> {
             Text(
@@ -280,52 +232,70 @@ private fun SpeechSection(speech: SpeechSessionResult) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            PauseMetricsBlock(audio)
         }
         is SpeechSessionResult.Ready -> {
             SpeechMetricsBlock(speech.metrics)
+            PauseMetricsBlock(audio)
         }
     }
 }
 
 @Composable
+private fun PauseMetricsBlock(audio: AudioSessionMetrics) {
+    if (audio.insufficientData ||
+        audio.inputQuality == AudioInputQuality.INSUFFICIENT_AUDIO ||
+        audio.inputQuality == AudioInputQuality.RECORDING_ERROR
+    ) {
+        return
+    }
+    val buckets = audio.pauseBuckets ?: PauseBuckets.empty()
+    Text(
+        text = VoiceReportPresentation.PAUSE_INTERPRETATION,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    ReportLine(
+        label = "Pause significative",
+        value = buckets.significantCount.toString(),
+    )
+    ReportLine(
+        label = "Pause lunghe",
+        value = buckets.longCount.toString(),
+    )
+    ReportLine(
+        label = "Pausa più lunga",
+        value = audio.longestPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
+    )
+    ReportLine(
+        label = "Durata mediana delle pause",
+        value = audio.medianPauseDurationMs?.let { formatDurationMs(it) } ?: "—",
+    )
+}
+
+@Composable
 private fun SpeechMetricsBlock(metrics: SpeechIntelligenceMetrics) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
+    var breakdownExpanded by rememberSaveable { mutableStateOf(false) }
+    val presentation = SpeechReportPresentation.rhythmFluency(metrics)
 
-    ReportLine(
-        label = "Parole",
-        value = SpeechReportPresentation.formatWordCount(metrics.wordCount),
-    )
-    ReportLine(
-        label = "Ritmo",
-        value = SpeechReportPresentation.formatWpm(metrics.wordsPerMinute),
-    )
-    ReportLine(
-        label = "Riempitivi stimati",
-        value = SpeechReportPresentation.formatFillerCount(metrics.fillerCount),
-    )
-    val breakdown = SpeechReportPresentation.formatFillerBreakdown(metrics.fillerBreakdown)
-    if (breakdown.isNotEmpty()) {
-        Text(
-            text = breakdown,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+    ReportLine(label = "Parole", value = presentation.wordCountLabel)
+    ReportLine(label = "Ritmo", value = presentation.wpmLabel)
+    ReportLine(label = "Riempitivi stimati", value = presentation.fillerCountLabel)
+    ReportLine(label = "Riempitivi al minuto", value = presentation.fillersPerMinuteLabel)
+    ReportLine(label = "Ripetizioni ravvicinate", value = presentation.immediateRepetitionLabel)
 
-    TextButton(onClick = { expanded = !expanded }) {
-        Text(if (expanded) "Trascrizione: Nascondi" else "Trascrizione: Mostra")
-    }
-    if (expanded) {
-        val transcriptScroll = rememberScrollState()
-        Text(
-            text = metrics.transcript.ifBlank { "—" },
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 200.dp)
-                .verticalScroll(transcriptScroll),
-        )
+    if (presentation.fillerBreakdownLines.isNotEmpty()) {
+        TextButton(onClick = { breakdownExpanded = !breakdownExpanded }) {
+            Text(
+                if (breakdownExpanded) "Nascondi dettaglio riempitivi"
+                else "Mostra dettaglio riempitivi",
+            )
+        }
+        if (breakdownExpanded) {
+            presentation.fillerBreakdownLines.forEach { (word, count) ->
+                ReportLine(label = word, value = count.toString())
+            }
+        }
     }
 }
 
