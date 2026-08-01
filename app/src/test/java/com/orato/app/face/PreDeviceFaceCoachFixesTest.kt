@@ -1,15 +1,11 @@
 package com.orato.app.face
 
-import com.orato.app.pose.NormalizedLandmarkPoint
-import com.orato.app.pose.PoseLandmarkId
-import com.orato.app.pose.UpperBodyPoseFrame
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.math.abs
 
 class ContinuousCalibrationTest {
 
@@ -34,7 +30,7 @@ class ContinuousCalibrationTest {
 
     @Test
     fun eighteenSamplesUnderThreeSeconds_doNotComplete() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 10)
+        val mgr = FaceCalibrationManager(requiredSamples = 10)
         var last: FaceCalibrationProgress? = null
         // 18 samples at 80ms ≈ 1.36s < 3s
         repeat(18) { i ->
@@ -46,7 +42,7 @@ class ContinuousCalibrationTest {
 
     @Test
     fun validStableDataSpanningThreeSeconds_completes() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 10)
+        val mgr = FaceCalibrationManager(requiredSamples = 10)
         var last: FaceCalibrationProgress? = null
         var t = 0L
         while (t <= 3_200L) {
@@ -59,7 +55,7 @@ class ContinuousCalibrationTest {
 
     @Test
     fun disconnectedFragments_doNotCombineIntoThreeSeconds() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 5)
+        val mgr = FaceCalibrationManager(requiredSamples = 5)
         var last: FaceCalibrationProgress? = null
         // 1.5s valid
         for (t in 0L..1_500L step 100L) last = mgr.process(validFrame(t))
@@ -76,7 +72,7 @@ class ContinuousCalibrationTest {
 
     @Test
     fun briefInvalidGap_mayBeBridged() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 8)
+        val mgr = FaceCalibrationManager(requiredSamples = 8)
         var last: FaceCalibrationProgress? = null
         for (t in 0L..2_900L step 100L) last = mgr.process(validFrame(t))
         // 80ms invalid
@@ -90,7 +86,7 @@ class ContinuousCalibrationTest {
 
     @Test
     fun sustainedInvalidGap_resetsCalibration() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 5)
+        val mgr = FaceCalibrationManager(requiredSamples = 5)
         var last: FaceCalibrationProgress? = null
         for (t in 0L..1_500L step 100L) last = mgr.process(validFrame(t))
         assertTrue(last!!.acceptedSamples > 0)
@@ -102,7 +98,7 @@ class ContinuousCalibrationTest {
 
     @Test
     fun unstableHead_rejectsCompletion() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 5)
+        val mgr = FaceCalibrationManager(requiredSamples = 5)
         var last: FaceCalibrationProgress? = null
         var yaw = 0f
         for (t in 0L..3_500L step 100L) {
@@ -114,7 +110,7 @@ class ContinuousCalibrationTest {
 
     @Test
     fun invalidIris_rejectsSamples() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false)
+        val mgr = FaceCalibrationManager()
         val p = mgr.process(
             validFrame(0L).copy(leftIrisHorizontalRatio = null, rightIrisHorizontalRatio = null),
         )
@@ -124,21 +120,21 @@ class ContinuousCalibrationTest {
 
     @Test
     fun tooSmallFace_rejects() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false)
+        val mgr = FaceCalibrationManager()
         val p = mgr.process(validFrame(0L).copy(faceScale = 0.05f))
         assertEquals(FaceCalibrationUiState.MOVE_CLOSER, p.uiState)
     }
 
     @Test
     fun tooLargeFace_rejects() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false)
+        val mgr = FaceCalibrationManager()
         val p = mgr.process(validFrame(0L).copy(faceScale = 0.8f))
         assertEquals(FaceCalibrationUiState.MOVE_FARTHER, p.uiState)
     }
 
     @Test
     fun insufficientSampleCount_doesNotComplete() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 50)
+        val mgr = FaceCalibrationManager(requiredSamples = 50)
         var last: FaceCalibrationProgress? = null
         for (t in 0L..3_500L step 200L) last = mgr.process(validFrame(t))
         // Only ~18 samples
@@ -153,75 +149,22 @@ class ContinuousCalibrationTest {
     }
 
     @Test
-    fun interview_rejectsStaleShoulderEvidence() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = true, requiredSamples = 5, sessionId = 1L)
-        mgr.onPoseFrame(
-            UpperBodyPoseFrame(
-                landmarks = mapOf(
-                    PoseLandmarkId.LEFT_SHOULDER to NormalizedLandmarkPoint(PoseLandmarkId.LEFT_SHOULDER, 0.3f, 0.4f, 0.9f),
-                    PoseLandmarkId.RIGHT_SHOULDER to NormalizedLandmarkPoint(PoseLandmarkId.RIGHT_SHOULDER, 0.7f, 0.4f, 0.9f),
-                    PoseLandmarkId.LEFT_HIP to NormalizedLandmarkPoint(PoseLandmarkId.LEFT_HIP, 0.35f, 0.8f, 0.7f),
-                ),
-                imageWidth = 100,
-                imageHeight = 100,
-                timestampMs = 0L,
-            ),
-            poseSessionId = 1L,
-        )
-        // Face at t=500 — pose evidence age 500 > 300
-        val p = mgr.process(validFrame(500L))
-        assertEquals(FaceCalibrationUiState.SHOW_SHOULDERS, p.uiState)
-    }
-
-    @Test
-    fun interview_acceptsFreshShouldersAndTorso_handsNotRequired() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = true, requiredSamples = 5, sessionId = 1L)
-        var last: FaceCalibrationProgress? = null
-        for (t in 0L..3_200L step 100L) {
-            mgr.onPoseFrame(
-                UpperBodyPoseFrame(
-                    landmarks = mapOf(
-                        PoseLandmarkId.LEFT_SHOULDER to NormalizedLandmarkPoint(PoseLandmarkId.LEFT_SHOULDER, 0.3f, 0.4f, 0.9f),
-                        PoseLandmarkId.RIGHT_SHOULDER to NormalizedLandmarkPoint(PoseLandmarkId.RIGHT_SHOULDER, 0.7f, 0.4f, 0.9f),
-                        PoseLandmarkId.LEFT_HIP to NormalizedLandmarkPoint(PoseLandmarkId.LEFT_HIP, 0.35f, 0.8f, 0.7f),
-                    ),
-                    imageWidth = 100,
-                    imageHeight = 100,
-                    timestampMs = t,
-                ),
-                poseSessionId = 1L,
-            )
-            last = mgr.process(validFrame(t))
-        }
-        assertEquals(FaceCalibrationUiState.COMPLETED, last!!.uiState)
+    fun noUpperBodyCalibrationEvidenceTypeRemains() {
         assertNull(
-            UpperBodyPoseFrame(emptyMap(), 10, 10, 0L).landmarks[PoseLandmarkId.LEFT_WRIST],
+            runCatching {
+                Class.forName("com.orato.app.face.UpperBodyCalibrationEvidence")
+            }.getOrNull(),
         )
-    }
-
-    @Test
-    fun poseEvidenceFromAnotherSession_rejected() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = true, sessionId = 1L)
-        mgr.onPoseFrame(
-            UpperBodyPoseFrame(
-                landmarks = mapOf(
-                    PoseLandmarkId.LEFT_SHOULDER to NormalizedLandmarkPoint(PoseLandmarkId.LEFT_SHOULDER, 0.3f, 0.4f, 0.9f),
-                    PoseLandmarkId.RIGHT_SHOULDER to NormalizedLandmarkPoint(PoseLandmarkId.RIGHT_SHOULDER, 0.7f, 0.4f, 0.9f),
-                    PoseLandmarkId.LEFT_HIP to NormalizedLandmarkPoint(PoseLandmarkId.LEFT_HIP, 0.35f, 0.8f, 0.7f),
-                ),
-                imageWidth = 100,
-                imageHeight = 100,
-                timestampMs = 100L,
-            ),
-            poseSessionId = 99L,
+        assertNull(
+            runCatching {
+                Class.forName("com.orato.app.vision.VisualFrameScheduler")
+            }.getOrNull(),
         )
-        val p = mgr.process(validFrame(100L))
-        assertEquals(FaceCalibrationUiState.SHOW_SHOULDERS, p.uiState)
     }
 
     @Test
     fun progressReflectsValidContinuousDuration() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 5)
+        val mgr = FaceCalibrationManager(requiredSamples = 5)
         var last: FaceCalibrationProgress? = null
         for (t in 0L..1_500L step 100L) last = mgr.process(validFrame(t))
         assertEquals(1_500L, last!!.validContinuousDurationMs)
@@ -230,7 +173,7 @@ class ContinuousCalibrationTest {
 
     @Test
     fun cancellingCalibration_clearsSamplesAndTimestamps() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false)
+        val mgr = FaceCalibrationManager()
         mgr.process(validFrame(0L))
         mgr.process(validFrame(500L))
         mgr.reset()

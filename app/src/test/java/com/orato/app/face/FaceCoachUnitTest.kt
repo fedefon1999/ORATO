@@ -1,8 +1,5 @@
 package com.orato.app.face
 
-import com.orato.app.pose.NormalizedLandmarkPoint
-import com.orato.app.pose.PoseLandmarkId
-import com.orato.app.pose.UpperBodyPoseFrame
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -249,7 +246,7 @@ class FaceCalibrationManagerTest {
 
     @Test
     fun invalidCalibrationFrames_rejected() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false)
+        val mgr = FaceCalibrationManager()
         val bad = FaceFrameMapper.emptyFrame(1L)
         val p = mgr.process(bad)
         assertEquals(0, p.acceptedSamples)
@@ -258,7 +255,7 @@ class FaceCalibrationManagerTest {
 
     @Test
     fun stableCalibration_completesWithAggregation() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 5)
+        val mgr = FaceCalibrationManager(requiredSamples = 5)
         var last: FaceCalibrationProgress? = null
         for (t in 0L..3_200L step 100L) {
             last = mgr.process(validFrame(t, yaw = 0.1f * ((t / 100) % 2).toFloat()))
@@ -276,45 +273,14 @@ class FaceCalibrationManagerTest {
     }
 
     @Test
-    fun interviewCalibration_checksFaceAndUpperTorso_handsNotRequired() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = true, requiredSamples = 3)
-        val pose = UpperBodyPoseFrame(
-            landmarks = mapOf(
-                PoseLandmarkId.LEFT_SHOULDER to NormalizedLandmarkPoint(
-                    PoseLandmarkId.LEFT_SHOULDER, 0.3f, 0.4f, 0.9f,
-                ),
-                PoseLandmarkId.RIGHT_SHOULDER to NormalizedLandmarkPoint(
-                    PoseLandmarkId.RIGHT_SHOULDER, 0.7f, 0.4f, 0.9f,
-                ),
-                PoseLandmarkId.LEFT_HIP to NormalizedLandmarkPoint(
-                    PoseLandmarkId.LEFT_HIP, 0.35f, 0.8f, 0.7f,
-                ),
-            ),
-            imageWidth = 100,
-            imageHeight = 100,
-            timestampMs = 0L,
+    fun faceCalibration_hasNoPoseDependencyApi() {
+        val methods = FaceCalibrationManager::class.java.declaredMethods.map { it.name }
+        assertFalse(methods.any { it.equals("onPoseFrame", ignoreCase = true) })
+        assertFalse(methods.any { it.contains("UpperBody", ignoreCase = true) })
+        assertFalse(methods.any { it.contains("Shoulder", ignoreCase = true) })
+        assertFalse(
+            FaceCalibrationUiState.entries.any { it.name.contains("SHOULDER", ignoreCase = true) },
         )
-        assertTrue(mgr.hasVisibleShouldersAndTorso(pose))
-        // Hands absent — still valid for interview framing.
-        assertNull(pose.landmarks[PoseLandmarkId.LEFT_WRIST])
-        mgr.onPoseFrame(pose)
-        var last: FaceCalibrationProgress? = null
-        for (t in 0L..3_200L step 100L) {
-            mgr.onPoseFrame(pose.copy(timestampMs = t))
-            last = mgr.process(validFrame(t))
-        }
-        assertEquals(FaceCalibrationUiState.COMPLETED, last!!.uiState)
-        assertEquals(true, last!!.shouldersValid)
-    }
-
-    @Test
-    fun interviewWithoutShoulders_showsShouldersPrompt() {
-        val mgr = FaceCalibrationManager(requireUpperTorso = true, requiredSamples = 5)
-        mgr.onPoseFrame(
-            UpperBodyPoseFrame(landmarks = emptyMap(), imageWidth = 10, imageHeight = 10),
-        )
-        val p = mgr.process(validFrame(1L))
-        assertEquals(FaceCalibrationUiState.SHOW_SHOULDERS, p.uiState)
     }
 }
 
