@@ -417,6 +417,4 @@ internal fun practiceRunningInstruction(
         "Assicurati che il corpo sia ben visibile nell’inquadratura."
     com.orato.app.domain.model.VisualAnalysisMode.FACE_ONLY ->
         "Mantieni il viso visibile e guarda naturalmente verso la videocamera."
-    com.orato.app.domain.model.VisualAnalysisMode.BODY_AND_FACE ->
-        "Assicurati che viso, spalle e parte superiore del busto siano visibili."
 }

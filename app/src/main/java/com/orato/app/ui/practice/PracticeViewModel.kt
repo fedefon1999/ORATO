@@ -92,15 +92,6 @@ data class PracticeUiState(
         get() = when (visualAnalysisMode) {
             VisualAnalysisMode.BODY_ONLY -> poseStatusLabel
             VisualAnalysisMode.FACE_ONLY -> faceStatusLabel
-            VisualAnalysisMode.BODY_AND_FACE -> when {
-                poseStatus is PoseDetectionStatus.Error &&
-                    faceStatus is FaceDetectionStatus.Error -> "Analisi visuale non disponibile"
-                poseStatus is PoseDetectionStatus.Error -> faceStatusLabel
-                faceStatus is FaceDetectionStatus.Error -> poseStatusLabel
-                poseStatus == PoseDetectionStatus.Detected ||
-                    faceStatus == FaceDetectionStatus.Detected -> "Tracciamento attivo"
-                else -> "Inquadra viso e busto"
-            }
         }
 
     val audioState: AudioRecordingState

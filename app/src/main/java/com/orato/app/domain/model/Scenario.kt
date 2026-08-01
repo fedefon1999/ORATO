@@ -12,11 +12,6 @@ enum class Scenario(val routeArg: String, val displayName: String, val descripti
         displayName = "Presentazione davanti al pubblico",
         description = "Allenati per una presentazione di lavoro.",
     ),
-    INTERVIEW(
-        routeArg = "interview",
-        displayName = "Colloquio",
-        description = "Preparati a rispondere con chiarezza e presenza.",
-    ),
     EXAM(
         routeArg = "exam",
         displayName = "Esame universitario",
@@ -34,6 +29,10 @@ enum class Scenario(val routeArg: String, val displayName: String, val descripti
     );
 
     companion object {
+        /**
+         * Resolves a route argument. Unknown or legacy values (including removed
+         * `interview`) fall back to [PRESENTATION] and are not selectable.
+         */
         fun fromRouteArg(arg: String): Scenario =
             entries.firstOrNull { it.routeArg == arg } ?: PRESENTATION
     }
