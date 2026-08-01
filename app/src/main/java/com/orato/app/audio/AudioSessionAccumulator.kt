@@ -172,7 +172,12 @@ class AudioSessionAccumulator(
                 capturedDurationMs = capturedDurationMs(),
                 speechDurationMs = null,
                 rawVoicedDurationMs = null,
+                effectiveSpeechBlockDurationMs = null,
                 briefGapsMergedMs = null,
+                firstSpeechOnsetMs = null,
+                lastSpeechOffsetMs = null,
+                leadingSilenceMs = null,
+                trailingSilenceMs = null,
                 longestSpeechSegmentMs = null,
                 droppedReadCount = droppedReads,
                 sampleRateHz = sampleRateHz,
@@ -201,14 +206,16 @@ class AudioSessionAccumulator(
         val speechSegments = qualifiedSpeechSegments()
         val timeline = EffectiveSpeakingBlocks.build(
             qualifiedSpeechSegments = speechSegments,
+            capturedDurationMs = durationMs,
             mediumPauseThresholdMs = config.MEDIUM_PAUSE_THRESHOLD_MS,
         )
-        val effectiveMs = timeline.effectiveSpeechDurationMs
+        val spanMs = timeline.speechSpanDurationMs
+        val blockMs = timeline.effectiveSpeechBlockDurationMs
         val rawVoiced = timeline.rawVoicedDurationMs
         val longestSpeech = timeline.longestContinuousSpeechMs
-        // User-facing speaking ratio uses effective blocks — never raw capture alone.
+        // Quality / estimated vocal activity uses block duration (not discourse span).
         val speechRatio = if (durationMs > 0L) {
-            effectiveMs.toDouble() / durationMs.toDouble()
+            blockMs.toDouble() / durationMs.toDouble()
         } else {
             0.0
         }
@@ -246,9 +253,14 @@ class AudioSessionAccumulator(
                 state = state,
                 inputQuality = AudioInputQuality.INSUFFICIENT_AUDIO,
                 capturedDurationMs = durationMs,
-                speechDurationMs = effectiveMs.takeIf { speechSegments.isNotEmpty() },
+                speechDurationMs = spanMs.takeIf { speechSegments.isNotEmpty() && spanMs > 0L },
                 rawVoicedDurationMs = rawVoiced.takeIf { speechSegments.isNotEmpty() },
+                effectiveSpeechBlockDurationMs = blockMs.takeIf { speechSegments.isNotEmpty() },
                 briefGapsMergedMs = timeline.briefGapsMergedMs.takeIf { speechSegments.isNotEmpty() },
+                firstSpeechOnsetMs = timeline.firstConfirmedSpeechStartMs,
+                lastSpeechOffsetMs = timeline.lastConfirmedSpeechEndMs,
+                leadingSilenceMs = timeline.leadingSilenceMs.takeIf { speechSegments.isNotEmpty() },
+                trailingSilenceMs = timeline.trailingSilenceMs.takeIf { speechSegments.isNotEmpty() },
                 longestSpeechSegmentMs = longestSpeech.takeIf { speechSegments.isNotEmpty() },
                 droppedReadCount = droppedReads,
                 sampleRateHz = sampleRateHz,
@@ -271,9 +283,14 @@ class AudioSessionAccumulator(
             state = state,
             inputQuality = quality,
             capturedDurationMs = durationMs,
-            speechDurationMs = effectiveMs,
+            speechDurationMs = spanMs,
             rawVoicedDurationMs = rawVoiced,
+            effectiveSpeechBlockDurationMs = blockMs,
             briefGapsMergedMs = timeline.briefGapsMergedMs,
+            firstSpeechOnsetMs = timeline.firstConfirmedSpeechStartMs,
+            lastSpeechOffsetMs = timeline.lastConfirmedSpeechEndMs,
+            leadingSilenceMs = timeline.leadingSilenceMs,
+            trailingSilenceMs = timeline.trailingSilenceMs,
             longestSpeechSegmentMs = longestSpeech,
             droppedReadCount = droppedReads,
             sampleRateHz = sampleRateHz,

@@ -389,7 +389,7 @@ class ReportPreparationCoordinator private constructor(
         val metrics = try {
             SpeechMetricsCalculator.compute(
                 transcript = result.transcript,
-                vadSpeechDurationMs = audio.speechDurationMs ?: 0L,
+                vadSpeechDurationMs = audio.speechSpanDurationMs ?: audio.speechDurationMs ?: 0L,
                 audio = audio,
             )
         } catch (t: Throwable) {

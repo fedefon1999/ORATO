@@ -92,8 +92,9 @@ private fun SessionOverviewCard(report: CompletedSessionReport) {
             formattedValue = FinalReportPresentation.formatDuration(report.totalSessionDurationMs),
         )
         MetricItem(
-            label = "Tempo effettivo di parlato",
-            formattedValue = FinalReportPresentation.formatDuration(report.effectiveSpeechDurationMs),
+            label = "Durata del discorso",
+            formattedValue = FinalReportPresentation.formatDuration(report.speechSpanDurationMs),
+            explanation = "Tempo compreso tra l’inizio e la fine del parlato, incluse le pause.",
         )
         val rhythm = report.rhythmAndFluency
         if (rhythm.linguisticAvailable) {
@@ -145,14 +146,9 @@ private fun VoiceSectionCard(report: CompletedSessionReport) {
             return@ReportSectionCard
         }
         MetricItem(
-            label = "Percentuale di parlato",
-            formattedValue = FinalReportPresentation.formatPercent(voice.speechRatioPercent),
-            explanation = "Calcolata sui blocchi di parlato, unendo le pause inferiori a 0,5 secondi.",
-        )
-        MetricItem(
-            label = "Tempo effettivo di parlato",
-            formattedValue = FinalReportPresentation.formatDuration(voice.effectiveSpeechDurationMs),
-            explanation = "Include le brevi pause naturali e si interrompe quando inizia una pausa significativa.",
+            label = "Durata del discorso",
+            formattedValue = FinalReportPresentation.formatDuration(voice.speechSpanDurationMs),
+            explanation = "Tempo compreso tra l’inizio e la fine del parlato, incluse le pause.",
         )
         MetricItem(
             label = "Volume medio",

@@ -74,6 +74,8 @@ data class DiscourseMarkerMetrics(
 /**
  * Linguistic metrics derived from an ephemeral transcript.
  * No transcript field — the normal report must not expose recognized text.
+ *
+ * [vadSpeechDurationMs] holds the discourse span (first→last speech) used for WPM.
  */
 data class SpeechIntelligenceMetrics(
     val wordCount: Int,

@@ -33,8 +33,8 @@ data class BodyReportData(
 )
 
 data class VoiceReportData(
-    val speechRatioPercent: Double?,
-    val effectiveSpeechDurationMs: Long?,
+    /** Discourse span (first→last speech). */
+    val speechSpanDurationMs: Long?,
     val meanSpeechDbfs: Double?,
     val volumeVariationStdDevDb: Double?,
     val clippingPercent: Double?,
@@ -58,7 +58,8 @@ data class RhythmAndFluencyReportData(
     val longestPauseDurationMs: Long? = null,
     val medianPauseDurationMs: Long? = null,
     val longestContinuousSpeechMs: Long? = null,
-    val effectiveSpeechDurationMs: Long? = null,
+    /** Discourse span used for rates — “Durata del discorso”. */
+    val speechSpanDurationMs: Long? = null,
 )
 
 /**
@@ -70,13 +71,17 @@ data class CompletedSessionReport(
     val scenarioName: String,
     val completedAtEpochMs: Long,
     val totalSessionDurationMs: Long,
-    val effectiveSpeechDurationMs: Long?,
+    /** Discourse span: first speech onset → last speech offset. */
+    val speechSpanDurationMs: Long?,
     val body: BodyReportData,
     val voice: VoiceReportData,
     val rhythmAndFluency: RhythmAndFluencyReportData,
     val unavailableSections: Set<ReportSection>,
     val aiCoachingState: AiCoachingState = AiCoachingState.NotAvailable,
-)
+) {
+    /** @deprecated Use [speechSpanDurationMs]. */
+    val effectiveSpeechDurationMs: Long? get() = speechSpanDurationMs
+}
 
 object CompletedSessionReportFactory {
 
@@ -91,12 +96,12 @@ object CompletedSessionReportFactory {
         linguisticUnavailableMessage: String? = null,
         linguisticUnavailableReason: com.orato.app.speech.LinguisticUnavailableReason? = null,
     ): CompletedSessionReport {
-        val speechMs = audio.speechDurationMs
+        val spanMs = audio.speechSpanDurationMs ?: audio.speechDurationMs
         val qualityOk = SpeechMetricsCalculator.isAudioQualityValidForWpm(audio)
         val buckets = audio.pauseBuckets
         val significant = buckets?.significantCount
-        val significantPerMin = if (significant != null && speechMs != null) {
-            SpeechMetricsCalculator.significantPausesPerMinute(significant, speechMs, qualityOk)
+        val significantPerMin = if (significant != null && spanMs != null) {
+            SpeechMetricsCalculator.significantPausesPerMinute(significant, spanMs, qualityOk)
         } else {
             null
         }
@@ -106,8 +111,7 @@ object CompletedSessionReportFactory {
             audio.inputQuality == AudioInputQuality.RECORDING_ERROR
 
         val voice = VoiceReportData(
-            speechRatioPercent = audio.speechRatioPercent.takeUnless { voiceInsufficient },
-            effectiveSpeechDurationMs = speechMs.takeUnless { voiceInsufficient },
+            speechSpanDurationMs = spanMs.takeUnless { voiceInsufficient },
             meanSpeechDbfs = audio.meanSpeechDbfs.takeUnless { voiceInsufficient },
             volumeVariationStdDevDb = audio.volumeVariationStdDevDb.takeUnless { voiceInsufficient },
             clippingPercent = audio.clippingPercent,
@@ -130,7 +134,7 @@ object CompletedSessionReportFactory {
                 longestPauseDurationMs = audio.longestPauseDurationMs,
                 medianPauseDurationMs = audio.medianPauseDurationMs,
                 longestContinuousSpeechMs = audio.longestSpeechSegmentMs,
-                effectiveSpeechDurationMs = speechMs,
+                speechSpanDurationMs = spanMs,
             )
         } else {
             RhythmAndFluencyReportData(
@@ -144,7 +148,7 @@ object CompletedSessionReportFactory {
                 longestPauseDurationMs = audio.longestPauseDurationMs.takeUnless { voiceInsufficient },
                 medianPauseDurationMs = audio.medianPauseDurationMs.takeUnless { voiceInsufficient },
                 longestContinuousSpeechMs = audio.longestSpeechSegmentMs.takeUnless { voiceInsufficient },
-                effectiveSpeechDurationMs = speechMs.takeUnless { voiceInsufficient },
+                speechSpanDurationMs = spanMs.takeUnless { voiceInsufficient },
             )
         }
 
@@ -158,7 +162,7 @@ object CompletedSessionReportFactory {
             scenarioName = scenarioName,
             completedAtEpochMs = completedAtEpochMs,
             totalSessionDurationMs = totalSessionDurationMs,
-            effectiveSpeechDurationMs = speechMs,
+            speechSpanDurationMs = spanMs,
             body = BodyReportData(body),
             voice = voice,
             rhythmAndFluency = rhythm,

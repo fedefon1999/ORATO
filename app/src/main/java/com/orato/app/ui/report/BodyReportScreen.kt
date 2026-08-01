@@ -178,8 +178,8 @@ private fun VoiceSection(audio: AudioSessionMetrics) {
         value = formatDurationMs(audio.capturedDurationMs),
     )
     ReportLine(
-        label = "Percentuale di parlato",
-        value = audio.speechRatioPercent?.let { "%.0f%%".format(it) } ?: "—",
+        label = "Durata del discorso",
+        value = audio.speechDurationMs?.let { formatDurationMs(it) } ?: "—",
     )
     if (audio.meanSpeechDbfs == null) {
         ReportLine(label = "Volume medio", value = "Dati insufficienti")

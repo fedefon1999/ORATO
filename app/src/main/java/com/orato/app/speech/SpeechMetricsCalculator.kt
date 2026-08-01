@@ -4,8 +4,8 @@ import com.orato.app.audio.AudioInputQuality
 import com.orato.app.audio.AudioSessionMetrics
 
 /**
- * Builds [SpeechIntelligenceMetrics] from an ephemeral transcript and VAD speech duration.
- * The transcript is never stored in the returned metrics.
+ * Builds [SpeechIntelligenceMetrics] from an ephemeral transcript and discourse span.
+ * [vadSpeechDurationMs] must be speechSpanDurationMs (first→last speech), not raw VAD.
  */
 object SpeechMetricsCalculator {
 

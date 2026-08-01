@@ -60,9 +60,9 @@ data class AudioSessionMetrics(
     /** Actual successfully captured duration in milliseconds. */
     val capturedDurationMs: Long,
     /**
-     * Finalized user-facing effective speaking duration (ms).
-     * Merges brief gaps below [AudioMetricsConfig.MEDIUM_PAUSE_THRESHOLD_MS].
-     * Never equal to [capturedDurationMs]; null when insufficient / error.
+     * Discourse span: first confirmed speech onset → final speech offset (ms).
+     * Includes all internal pauses. Used for WPM and delivery-rate metrics.
+     * Null when insufficient / error.
      */
     val speechDurationMs: Long? = null,
     /**
@@ -71,10 +71,23 @@ data class AudioSessionMetrics(
      */
     val rawVoicedDurationMs: Long? = null,
     /**
+     * Sum of merged speaking-block durations (brief gaps only).
+     * Debug / estimated vocal activity — not the WPM denominator.
+     */
+    val effectiveSpeechBlockDurationMs: Long? = null,
+    /**
      * Duration of brief gaps (&lt; medium threshold) merged into speaking blocks.
      * Debug only.
      */
     val briefGapsMergedMs: Long? = null,
+    /** First confirmed speech onset (ms). Debug. */
+    val firstSpeechOnsetMs: Long? = null,
+    /** Final confirmed speech offset (ms). Debug. */
+    val lastSpeechOffsetMs: Long? = null,
+    /** Leading silence before first speech (ms). Debug. */
+    val leadingSilenceMs: Long? = null,
+    /** Trailing silence after last speech (ms). Debug. */
+    val trailingSilenceMs: Long? = null,
     /**
      * Longest effective speaking block duration (ms).
      * Null when insufficient / error.
@@ -84,8 +97,8 @@ data class AudioSessionMetrics(
     val sampleRateHz: Int?,
     val audioSourceLabel: String?,
     /**
-     * Speech time / captured time as a percentage (0–100), or null if insufficient.
-     * Speech time comes from finalized speech segments — never from total capture.
+     * Estimated vocal-activity percentage from speech-block duration / capture.
+     * Debug / quality classification — not “discourse duration” percentage.
      */
     val speechRatioPercent: Double?,
     /**
@@ -121,6 +134,9 @@ data class AudioSessionMetrics(
      */
     val insufficientData: Boolean,
 ) {
+    /** Alias for [speechDurationMs] — first→last speech span. */
+    val speechSpanDurationMs: Long? get() = speechDurationMs
+
     companion object {
         fun idle(): AudioSessionMetrics =
             AudioSessionMetrics(
@@ -129,7 +145,12 @@ data class AudioSessionMetrics(
                 capturedDurationMs = 0L,
                 speechDurationMs = null,
                 rawVoicedDurationMs = null,
+                effectiveSpeechBlockDurationMs = null,
                 briefGapsMergedMs = null,
+                firstSpeechOnsetMs = null,
+                lastSpeechOffsetMs = null,
+                leadingSilenceMs = null,
+                trailingSilenceMs = null,
                 longestSpeechSegmentMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
@@ -154,7 +175,12 @@ data class AudioSessionMetrics(
                 capturedDurationMs = 0L,
                 speechDurationMs = null,
                 rawVoicedDurationMs = null,
+                effectiveSpeechBlockDurationMs = null,
                 briefGapsMergedMs = null,
+                firstSpeechOnsetMs = null,
+                lastSpeechOffsetMs = null,
+                leadingSilenceMs = null,
+                trailingSilenceMs = null,
                 longestSpeechSegmentMs = null,
                 droppedReadCount = 0,
                 sampleRateHz = null,
