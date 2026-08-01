@@ -7,22 +7,15 @@ import com.orato.app.audio.AudioRecorder
 import com.orato.app.audio.AudioRecordingState
 import com.orato.app.audio.AudioSessionMetrics
 import com.orato.app.audio.LiveAudioDebug
-import com.orato.app.audio.PendingSessionReport
-import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.metrics.BodyMetricsEngine
 import com.orato.app.metrics.LiveBodyMetrics
 import com.orato.app.metrics.SessionBodyReport
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
-import com.orato.app.speech.SpeechConfig
-import com.orato.app.speech.SpeechMetricsCalculator
-import com.orato.app.speech.SpeechSessionResult
-import com.orato.app.speech.TranscriptionCancelledException
-import com.orato.app.speech.TranscriptionFailedException
-import com.orato.app.speech.TranscriptionState
-import com.orato.app.speech.WhisperCppTranscriber
+import com.orato.app.report.ReportPreparationCoordinator
 import com.orato.app.speech.WhisperModelManager
 import com.orato.app.speech.WhisperModelState
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -51,8 +44,6 @@ data class PracticeUiState(
     /** When false, body session remains usable but voice metrics are unavailable. */
     val microphoneAvailable: Boolean = true,
     val whisperModelState: WhisperModelState = WhisperModelState.Checking,
-    val transcriptionState: TranscriptionState = TranscriptionState.NotRequested,
-    val speechResult: SpeechSessionResult = SpeechSessionResult.NotAttempted,
 ) {
     val progress: Float
         get() = 1f - (remainingSeconds.toFloat() / SESSION_DURATION_SECONDS.toFloat())
@@ -76,23 +67,30 @@ data class PracticeUiState(
         get() = audioDebug.state
 }
 
+/** Navigation signal after timer finalization — never carries a partial report. */
+data class SessionEndedNavigation(
+    val sessionId: String,
+    val scenarioRouteArg: String,
+)
+
 class PracticeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(PracticeUiState())
     val uiState: StateFlow<PracticeUiState> = _uiState.asStateFlow()
 
-    private val _sessionCompleted = MutableSharedFlow<SessionPracticeReport>(extraBufferCapacity = 1)
-    val sessionCompleted: SharedFlow<SessionPracticeReport> = _sessionCompleted.asSharedFlow()
+    private val _sessionEnded = MutableSharedFlow<SessionEndedNavigation>(extraBufferCapacity = 1)
+    val sessionEnded: SharedFlow<SessionEndedNavigation> = _sessionEnded.asSharedFlow()
 
     private var timerJob: Job? = null
-    private var transcriptionJob: Job? = null
     private val poseUpdatesEnabled = AtomicBoolean(true)
     private val metricsEngine = BodyMetricsEngine()
     private val audioRecorder = AudioRecorder(application.applicationContext)
     private val modelManager = WhisperModelManager(application.applicationContext)
-    private val speechTranscriber = WhisperCppTranscriber(modelManager)
+    private val reportPrep = ReportPreparationCoordinator.get(application.applicationContext)
 
     private val finishing = AtomicBoolean(false)
+    private var activeScenarioRouteArg: String = ""
+    private var activeScenarioDisplayName: String = ""
 
     init {
         viewModelScope.launch {
@@ -115,6 +113,11 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun bindScenario(routeArg: String, displayName: String) {
+        activeScenarioRouteArg = routeArg
+        activeScenarioDisplayName = displayName
+    }
+
     /** Explicit user action — never called implicitly on screen entry. */
     fun downloadWhisperModel() {
         viewModelScope.launch {
@@ -128,11 +131,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
     fun removeWhisperModel() {
         viewModelScope.launch {
-            cancelTranscription()
-            try {
-                speechTranscriber.close()
-            } catch (_: Throwable) {
-            }
             modelManager.removeModel()
         }
     }
@@ -167,7 +165,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
         finishing.set(false)
         metricsEngine.reset()
-        cancelTranscription()
 
         _uiState.update {
             it.copy(
@@ -176,8 +173,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 isFinished = false,
                 liveMetrics = LiveBodyMetrics(),
                 sessionReport = null,
-                speechResult = SpeechSessionResult.NotAttempted,
-                transcriptionState = TranscriptionState.NotRequested,
             )
         }
 
@@ -211,7 +206,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         timerJob?.cancel()
         timerJob = null
         finishing.set(false)
-        cancelTranscription()
         metricsEngine.reset()
         metricsEngine.stopAccumulation()
         viewModelScope.launch {
@@ -224,7 +218,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         timerJob?.cancel()
         timerJob = null
         finishing.set(false)
-        cancelTranscription()
         metricsEngine.reset()
         metricsEngine.stopAccumulation()
         viewModelScope.launch {
@@ -251,11 +244,13 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             audioDebug = LiveAudioDebug(),
             audioMetrics = AudioSessionMetrics.idle(),
             whisperModelState = modelState,
-            transcriptionState = TranscriptionState.NotRequested,
-            speechResult = SpeechSessionResult.NotAttempted,
         )
     }
 
+    /**
+     * Stops capture exactly once, finalizes body/audio, starts report preparation,
+     * then emits navigation to ReportPreparationScreen — never a partial final report.
+     */
     private fun finishSession() {
         if (!finishing.compareAndSet(false, true)) return
         metricsEngine.stopAccumulation()
@@ -265,21 +260,8 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             audioRecorder.stop(completed = true)
             val audioMetrics = audioRecorder.metrics.value
             val wav = audioRecorder.completedWavFile()
+            val sessionId = UUID.randomUUID().toString()
 
-            val initialSpeech: SpeechSessionResult = when {
-                !modelManager.isReady() ->
-                    SpeechSessionResult.Unavailable(SpeechConfig.METRICS_UNAVAILABLE_REPORT)
-                wav == null || audioMetrics.insufficientData ->
-                    SpeechSessionResult.Unavailable(SpeechConfig.METRICS_UNAVAILABLE_REPORT)
-                else ->
-                    SpeechSessionResult.Processing(TranscriptionState.PreparingAudio)
-            }
-
-            val report = SessionPracticeReport(
-                body = bodyReport,
-                audio = audioMetrics,
-                speech = initialSpeech,
-            )
             _uiState.update {
                 it.copy(
                     remainingSeconds = 0,
@@ -287,92 +269,26 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                     isFinished = true,
                     sessionReport = bodyReport,
                     audioMetrics = audioMetrics,
-                    speechResult = initialSpeech,
-                    transcriptionState = when (initialSpeech) {
-                        is SpeechSessionResult.Processing -> TranscriptionState.PreparingAudio
-                        is SpeechSessionResult.Unavailable -> TranscriptionState.ModelUnavailable
-                        else -> TranscriptionState.NotRequested
-                    },
                 )
             }
-            PendingSessionReport.set(report)
-            _sessionCompleted.tryEmit(report)
 
-            if (initialSpeech is SpeechSessionResult.Processing && wav != null) {
-                startPostSessionTranscription(wav, audioMetrics)
-            }
-        }
-    }
-
-    private fun startPostSessionTranscription(
-        wav: java.io.File,
-        audioMetrics: AudioSessionMetrics,
-    ) {
-        transcriptionJob?.cancel()
-        transcriptionJob = viewModelScope.launch {
-            updateSpeech(
-                SpeechSessionResult.Processing(TranscriptionState.Transcribing),
-                TranscriptionState.Transcribing,
+            reportPrep.start(
+                scenarioName = activeScenarioDisplayName.ifBlank { "Sessione" },
+                totalSessionDurationMs = SESSION_DURATION_SECONDS * 1_000L,
+                body = bodyReport,
+                audio = audioMetrics,
+                wavFile = wav,
+                modelReady = modelManager.isReady(),
+                sessionId = sessionId,
             )
-            try {
-                val result = speechTranscriber.transcribe(
-                    audioFile = wav,
-                    languageCode = SpeechConfig.DEFAULT_LANGUAGE_CODE,
-                )
-                // Ephemeral transcript → metrics only; do not retain recognized text.
-                val ephemeralTranscript = result.transcript
-                val metrics = SpeechMetricsCalculator.compute(
-                    transcript = ephemeralTranscript,
-                    vadSpeechDurationMs = audioMetrics.speechDurationMs ?: 0L,
-                    audio = audioMetrics,
-                )
-                val speech = if (metrics == null || ephemeralTranscript.isBlank()) {
-                    SpeechSessionResult.Unavailable(SpeechConfig.METRICS_UNAVAILABLE_REPORT)
-                } else {
-                    SpeechSessionResult.Ready(metrics)
-                }
-                updateSpeech(speech, TranscriptionState.Completed)
-            } catch (_: TranscriptionCancelledException) {
-                updateSpeech(
-                    SpeechSessionResult.Unavailable(SpeechConfig.METRICS_UNAVAILABLE_REPORT),
-                    TranscriptionState.Cancelled,
-                )
-            } catch (e: TranscriptionFailedException) {
-                updateSpeech(
-                    SpeechSessionResult.Unavailable(e.userSafeMessage),
-                    TranscriptionState.Error(e.userSafeMessage),
-                )
-            } catch (_: Throwable) {
-                updateSpeech(
-                    SpeechSessionResult.Unavailable(SpeechConfig.USER_SAFE_TRANSCRIPTION_ERROR),
-                    TranscriptionState.Error(SpeechConfig.USER_SAFE_TRANSCRIPTION_ERROR),
-                )
-            } finally {
-                // Release native context after each session to free memory during camera use.
-                try {
-                    speechTranscriber.close()
-                } catch (_: Throwable) {
-                }
-            }
+
+            _sessionEnded.tryEmit(
+                SessionEndedNavigation(
+                    sessionId = sessionId,
+                    scenarioRouteArg = activeScenarioRouteArg,
+                ),
+            )
         }
-    }
-
-    private fun updateSpeech(speech: SpeechSessionResult, transcriptionState: TranscriptionState) {
-        _uiState.update {
-            it.copy(speechResult = speech, transcriptionState = transcriptionState)
-        }
-        PendingSessionReport.updateSpeech(speech)
-    }
-
-    private fun cancelTranscription() {
-        speechTranscriber.requestCancellation()
-        transcriptionJob?.cancel()
-        transcriptionJob = null
-    }
-
-    /** Called when leaving the report screen so in-flight work can stop. */
-    fun onLeaveReport() {
-        cancelTranscription()
     }
 
     fun onPoseStatus(status: PoseDetectionStatus) {
@@ -409,15 +325,9 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     override fun onCleared() {
         poseUpdatesEnabled.set(false)
         timerJob?.cancel()
-        cancelTranscription()
         metricsEngine.release()
         audioRecorder.resetAsync()
-        viewModelScope.launch {
-            try {
-                speechTranscriber.shutdown()
-            } catch (_: Throwable) {
-            }
-        }
+        // Report preparation continues on the application-scoped coordinator.
         super.onCleared()
     }
 }

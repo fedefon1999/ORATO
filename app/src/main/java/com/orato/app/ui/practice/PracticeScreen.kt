@@ -41,7 +41,6 @@ import com.google.accompanist.permissions.PermissionStatus
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
-import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.domain.model.Scenario
 import com.orato.app.pose.PoseDetectionStatus
 import com.orato.app.pose.UpperBodyPoseFrame
@@ -53,7 +52,7 @@ import com.orato.app.speech.WhisperModelState
 fun PracticeScreen(
     scenario: Scenario,
     onExit: () -> Unit,
-    onSessionComplete: (SessionPracticeReport) -> Unit,
+    onSessionEnded: (SessionEndedNavigation) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: PracticeViewModel = viewModel(),
 ) {
@@ -61,9 +60,13 @@ fun PracticeScreen(
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
     val micPermission = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
 
+    LaunchedEffect(scenario.routeArg, scenario.displayName) {
+        viewModel.bindScenario(scenario.routeArg, scenario.displayName)
+    }
+
     LaunchedEffect(viewModel) {
-        viewModel.sessionCompleted.collect { report ->
-            onSessionComplete(report)
+        viewModel.sessionEnded.collect { nav ->
+            onSessionEnded(nav)
         }
     }
 
@@ -304,7 +307,7 @@ private fun PracticeSessionContent(
 
         Text(
             text = when {
-                uiState.isFinished -> "Sessione completata. Apertura report…"
+                uiState.isFinished -> "Sessione completata. Preparazione del report…"
                 uiState.isRunning -> "Parla con naturalezza. Mantieni lo sguardo verso la fotocamera."
                 else -> "Quando sei pronto, avvia i 90 secondi di pratica."
             },

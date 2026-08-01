@@ -276,23 +276,32 @@ private fun PauseMetricsBlock(audio: AudioSessionMetrics) {
 @Composable
 private fun SpeechMetricsBlock(metrics: SpeechIntelligenceMetrics) {
     var breakdownExpanded by rememberSaveable { mutableStateOf(false) }
-    val presentation = SpeechReportPresentation.rhythmFluency(metrics)
+    val markers = metrics.discourseMarkers
 
-    ReportLine(label = "Parole", value = presentation.wordCountLabel)
-    ReportLine(label = "Ritmo", value = presentation.wpmLabel)
-    ReportLine(label = "Riempitivi stimati", value = presentation.fillerCountLabel)
-    ReportLine(label = "Riempitivi al minuto", value = presentation.fillersPerMinuteLabel)
-    ReportLine(label = "Ripetizioni ravvicinate", value = presentation.immediateRepetitionLabel)
+    ReportLine(label = "Parole", value = SpeechReportPresentation.formatWordCount(metrics.wordCount))
+    ReportLine(label = "Ritmo", value = SpeechReportPresentation.formatWpm(metrics.wordsPerMinute))
+    ReportLine(
+        label = "Intercalari discorsivi stimati",
+        value = SpeechReportPresentation.formatDiscourseMarkerCount(markers.totalCount),
+    )
+    ReportLine(
+        label = "Intercalari discorsivi al minuto",
+        value = SpeechReportPresentation.formatMarkersPerMinute(markers.markersPerMinute),
+    )
+    ReportLine(
+        label = "Ripetizioni ravvicinate",
+        value = SpeechReportPresentation.formatImmediateRepetitions(metrics.immediateRepetitionCount),
+    )
 
-    if (presentation.fillerBreakdownLines.isNotEmpty()) {
+    if (markers.breakdown.isNotEmpty()) {
         TextButton(onClick = { breakdownExpanded = !breakdownExpanded }) {
             Text(
-                if (breakdownExpanded) "Nascondi dettaglio riempitivi"
-                else "Mostra dettaglio riempitivi",
+                if (breakdownExpanded) "Nascondi dettaglio intercalari"
+                else "Mostra dettaglio intercalari",
             )
         }
         if (breakdownExpanded) {
-            presentation.fillerBreakdownLines.forEach { (word, count) ->
+            markers.breakdown.forEach { (word, count) ->
                 ReportLine(label = word, value = count.toString())
             }
         }
