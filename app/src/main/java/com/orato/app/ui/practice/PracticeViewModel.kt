@@ -1,7 +1,13 @@
 package com.orato.app.ui.practice
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.orato.app.audio.AudioRecorder
+import com.orato.app.audio.AudioRecordingState
+import com.orato.app.audio.AudioSessionMetrics
+import com.orato.app.audio.LiveAudioDebug
+import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.metrics.BodyMetricsEngine
 import com.orato.app.metrics.LiveBodyMetrics
 import com.orato.app.metrics.SessionBodyReport
@@ -30,6 +36,10 @@ data class PracticeUiState(
     val poseFrame: UpperBodyPoseFrame? = null,
     val liveMetrics: LiveBodyMetrics = LiveBodyMetrics(),
     val sessionReport: SessionBodyReport? = null,
+    val audioDebug: LiveAudioDebug = LiveAudioDebug(),
+    val audioMetrics: AudioSessionMetrics = AudioSessionMetrics.idle(),
+    /** When false, body session remains usable but voice metrics are unavailable. */
+    val microphoneAvailable: Boolean = true,
 ) {
     val progress: Float
         get() = 1f - (remainingSeconds.toFloat() / SESSION_DURATION_SECONDS.toFloat())
@@ -48,23 +58,70 @@ data class PracticeUiState(
             PoseDetectionStatus.Insufficient -> "Posizionati davanti alla fotocamera"
             is PoseDetectionStatus.Error -> status.message
         }
+
+    val audioState: AudioRecordingState
+        get() = audioDebug.state
 }
 
-class PracticeViewModel : ViewModel() {
+class PracticeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(PracticeUiState())
     val uiState: StateFlow<PracticeUiState> = _uiState.asStateFlow()
 
-    private val _sessionCompleted = MutableSharedFlow<SessionBodyReport>(extraBufferCapacity = 1)
-    val sessionCompleted: SharedFlow<SessionBodyReport> = _sessionCompleted.asSharedFlow()
+    private val _sessionCompleted = MutableSharedFlow<SessionPracticeReport>(extraBufferCapacity = 1)
+    val sessionCompleted: SharedFlow<SessionPracticeReport> = _sessionCompleted.asSharedFlow()
 
     private var timerJob: Job? = null
     private val poseUpdatesEnabled = AtomicBoolean(true)
     private val metricsEngine = BodyMetricsEngine()
+    private val audioRecorder = AudioRecorder(application.applicationContext)
+
+    private val finishing = AtomicBoolean(false)
+
+    init {
+        viewModelScope.launch {
+            audioRecorder.liveDebug.collect { debug ->
+                _uiState.update { it.copy(audioDebug = debug) }
+            }
+        }
+        viewModelScope.launch {
+            audioRecorder.metrics.collect { metrics ->
+                _uiState.update { it.copy(audioMetrics = metrics) }
+            }
+        }
+    }
+
+    fun onMicrophoneAvailabilityChanged(available: Boolean) {
+        val wasAvailable = _uiState.value.microphoneAvailable
+        _uiState.update { it.copy(microphoneAvailable = available) }
+        if (!available && wasAvailable && _uiState.value.isRunning) {
+            // Permission revoked mid-session — stop audio once; body session continues.
+            audioRecorder.markUnavailable("Permesso microfono revocato")
+            viewModelScope.launch {
+                audioRecorder.stop(completed = false)
+            }
+        }
+    }
+
+    /** Called when the practice screen / app moves to background. */
+    fun onLeaveForeground() {
+        val running = _uiState.value.isRunning
+        val capturing = _uiState.value.audioState == AudioRecordingState.Recording ||
+            _uiState.value.audioState == AudioRecordingState.Initializing
+        if (running || capturing) {
+            viewModelScope.launch {
+                audioRecorder.stop(completed = false)
+            }
+            if (running) {
+                resetSessionKeepingAudioStop()
+            }
+        }
+    }
 
     fun startSession() {
         if (_uiState.value.isRunning || _uiState.value.isFinished) return
 
+        finishing.set(false)
         metricsEngine.reset()
 
         _uiState.update {
@@ -75,6 +132,17 @@ class PracticeViewModel : ViewModel() {
                 liveMetrics = LiveBodyMetrics(),
                 sessionReport = null,
             )
+        }
+
+        viewModelScope.launch {
+            audioRecorder.reset()
+            if (_uiState.value.microphoneAvailable) {
+                audioRecorder.start(microphonePermissionGranted = true)
+            } else {
+                audioRecorder.markUnavailable(
+                    "Microfono non disponibile — metriche vocali assenti",
+                )
+            }
         }
 
         timerJob?.cancel()
@@ -95,15 +163,37 @@ class PracticeViewModel : ViewModel() {
     /**
      * Cancels the timer and clears metric accumulators so the next session
      * cannot inherit prior samples. Live preview continues without aggregation.
+     * Stops audio exactly once and deletes the incomplete WAV.
      */
     fun resetSession() {
         timerJob?.cancel()
         timerJob = null
+        finishing.set(false)
         metricsEngine.reset()
         metricsEngine.stopAccumulation()
+        viewModelScope.launch {
+            audioRecorder.reset()
+        }
+        restoreIdleUiPreservingPose()
+    }
 
+    /** Like [resetSession] but assumes audio stop was already requested. */
+    private fun resetSessionKeepingAudioStop() {
+        timerJob?.cancel()
+        timerJob = null
+        finishing.set(false)
+        metricsEngine.reset()
+        metricsEngine.stopAccumulation()
+        viewModelScope.launch {
+            audioRecorder.reset()
+        }
+        restoreIdleUiPreservingPose()
+    }
+
+    private fun restoreIdleUiPreservingPose() {
         val poseStatus = _uiState.value.poseStatus
         val poseFrame = _uiState.value.poseFrame
+        val micOk = _uiState.value.microphoneAvailable
         _uiState.value = PracticeUiState(
             poseStatus = when (poseStatus) {
                 is PoseDetectionStatus.Error -> poseStatus
@@ -113,21 +203,33 @@ class PracticeViewModel : ViewModel() {
             poseFrame = poseFrame,
             liveMetrics = metricsEngine.liveMetrics(),
             sessionReport = null,
+            microphoneAvailable = micOk,
+            audioDebug = LiveAudioDebug(),
+            audioMetrics = AudioSessionMetrics.idle(),
         )
     }
 
     private fun finishSession() {
+        if (!finishing.compareAndSet(false, true)) return
         metricsEngine.stopAccumulation()
-        val report = metricsEngine.buildReport()
-        _uiState.update {
-            it.copy(
-                remainingSeconds = 0,
-                isRunning = false,
-                isFinished = true,
-                sessionReport = report,
+        val bodyReport = metricsEngine.buildReport()
+
+        viewModelScope.launch {
+            audioRecorder.stop(completed = true)
+            val audioMetrics = audioRecorder.metrics.value
+            _uiState.update {
+                it.copy(
+                    remainingSeconds = 0,
+                    isRunning = false,
+                    isFinished = true,
+                    sessionReport = bodyReport,
+                    audioMetrics = audioMetrics,
+                )
+            }
+            _sessionCompleted.tryEmit(
+                SessionPracticeReport(body = bodyReport, audio = audioMetrics),
             )
         }
-        _sessionCompleted.tryEmit(report)
     }
 
     fun onPoseStatus(status: PoseDetectionStatus) {
@@ -166,6 +268,7 @@ class PracticeViewModel : ViewModel() {
         poseUpdatesEnabled.set(false)
         timerJob?.cancel()
         metricsEngine.release()
+        audioRecorder.resetAsync()
         super.onCleared()
     }
 }

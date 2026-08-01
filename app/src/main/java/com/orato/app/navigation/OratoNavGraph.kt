@@ -7,8 +7,10 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.orato.app.audio.AudioSessionMetrics
+import com.orato.app.audio.PendingSessionReport
+import com.orato.app.audio.SessionPracticeReport
 import com.orato.app.domain.model.Scenario
-import com.orato.app.metrics.PendingBodyReport
 import com.orato.app.metrics.SessionBodyReport
 import com.orato.app.ui.home.HomeScreen
 import com.orato.app.ui.practice.PracticeScreen
@@ -54,7 +56,7 @@ fun OratoNavGraph(
                 scenario = scenario,
                 onExit = { navController.popBackStack() },
                 onSessionComplete = { report ->
-                    PendingBodyReport.set(report)
+                    PendingSessionReport.set(report)
                     navController.navigate(OratoRoutes.bodyReport(scenario.routeArg)) {
                         launchSingleTop = true
                     }
@@ -70,21 +72,25 @@ fun OratoNavGraph(
         ) { entry ->
             val scenarioArg = entry.arguments?.getString("scenario").orEmpty()
             val scenario = Scenario.fromRouteArg(scenarioArg)
-            val report: SessionBodyReport =
-                PendingBodyReport.peek() ?: SessionBodyReport.emptyInsufficient()
+            val report: SessionPracticeReport =
+                PendingSessionReport.peek()
+                    ?: SessionPracticeReport(
+                        body = SessionBodyReport.emptyInsufficient(),
+                        audio = AudioSessionMetrics.idle(),
+                    )
 
             BodyReportScreen(
                 scenario = scenario,
                 report = report,
                 onHome = {
-                    PendingBodyReport.clear()
+                    PendingSessionReport.clear()
                     navController.navigate(OratoRoutes.HOME) {
                         popUpTo(OratoRoutes.HOME) { inclusive = true }
                         launchSingleTop = true
                     }
                 },
                 onRepeat = {
-                    PendingBodyReport.clear()
+                    PendingSessionReport.clear()
                     navController.navigate(OratoRoutes.practice(scenario.routeArg)) {
                         popUpTo(OratoRoutes.practice(scenario.routeArg)) { inclusive = true }
                         launchSingleTop = true
