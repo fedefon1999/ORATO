@@ -152,6 +152,8 @@ object FaceFrameMapper {
             upperLid = IrisGeometry.Point(u.x, u.y),
             lowerLid = IrisGeometry.Point(l.x, l.y),
             irisCenter = IrisGeometry.Point(c.x, c.y),
+            // Both eyes use outer→inner as +X in upright image space (mirroring applied once in UI).
+            flipHorizontal = false,
         )
     }
 

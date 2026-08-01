@@ -349,7 +349,11 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         val usesFace = VisualAnalysisMapping.usesFace(mode)
 
         if (usesPose) metricsEngine.stopAccumulation()
-        if (usesFace) faceMetricsEngine.stopAccumulation()
+        if (usesFace) {
+            faceMetricsEngine.stopAccumulation()
+            // Close the last observed interval at a monotonic end bound.
+            faceMetricsEngine.finalizeAt(android.os.SystemClock.uptimeMillis())
+        }
 
         val bodyFailed = _uiState.value.bodyFailed ||
             _uiState.value.poseStatus is PoseDetectionStatus.Error

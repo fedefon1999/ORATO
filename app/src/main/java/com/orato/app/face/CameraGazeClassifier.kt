@@ -145,12 +145,17 @@ class CameraGazeClassifier(
 
         val bothEyes = leftIrisHDelta != null && rightIrisHDelta != null
         val irisToward = if (bothEyes) {
-            abs(leftIrisHDelta!!) <= config.GAZE_MAX_IRIS_HORIZONTAL_DELTA &&
-                abs(rightIrisHDelta!!) <= config.GAZE_MAX_IRIS_HORIZONTAL_DELTA &&
-                (leftIrisVDelta == null || abs(leftIrisVDelta) <= config.GAZE_MAX_IRIS_VERTICAL_DELTA) &&
-                (rightIrisVDelta == null || abs(rightIrisVDelta) <= config.GAZE_MAX_IRIS_VERTICAL_DELTA)
+                    abs(leftIrisHDelta!!) <= config.MAX_HORIZONTAL_IRIS_DELTA &&
+                abs(rightIrisHDelta!!) <= config.MAX_HORIZONTAL_IRIS_DELTA &&
+                (leftIrisVDelta == null || abs(leftIrisVDelta) <= config.MAX_VERTICAL_IRIS_DELTA) &&
+                (rightIrisVDelta == null || abs(rightIrisVDelta) <= config.MAX_VERTICAL_IRIS_DELTA)
         } else {
-            irisDeltas.all { abs(it) <= config.GAZE_MAX_IRIS_HORIZONTAL_DELTA }
+            // Single-eye: horizontal vs horizontal threshold only; vertical vs vertical.
+            val hOk = listOfNotNull(leftIrisHDelta, rightIrisHDelta)
+                .all { abs(it) <= config.MAX_HORIZONTAL_IRIS_DELTA }
+            val vOk = listOfNotNull(leftIrisVDelta, rightIrisVDelta)
+                .all { abs(it) <= config.MAX_VERTICAL_IRIS_DELTA }
+            hOk && vOk
         }
 
         return when {

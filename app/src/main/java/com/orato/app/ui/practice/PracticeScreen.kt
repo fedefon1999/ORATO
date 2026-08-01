@@ -110,8 +110,10 @@ fun PracticeScreen(
     ) { innerPadding ->
         when {
             cameraPermission.status.isGranted -> {
+                val analysisMode = com.orato.app.domain.model.VisualAnalysisMapping.modeFor(scenario)
                 PracticeSessionContent(
                     uiState = uiState,
+                    visualAnalysisMode = analysisMode,
                     microphoneGranted = micPermission.status.isGranted,
                     onRequestMicrophone = { micPermission.launchPermissionRequest() },
                     onStart = viewModel::startSession,
@@ -199,6 +201,7 @@ private fun CameraPermissionRationale(
 @Composable
 private fun PracticeSessionContent(
     uiState: PracticeUiState,
+    visualAnalysisMode: com.orato.app.domain.model.VisualAnalysisMode,
     microphoneGranted: Boolean,
     onRequestMicrophone: () -> Unit,
     onStart: () -> Unit,
@@ -223,7 +226,7 @@ private fun PracticeSessionContent(
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
             FrontCameraPreview(
-                visualAnalysisMode = uiState.visualAnalysisMode,
+                visualAnalysisMode = visualAnalysisMode,
                 onPoseFrame = onPoseFrame,
                 onPoseStatus = onPoseStatus,
                 onFaceFrame = onFaceFrame,
@@ -231,7 +234,7 @@ private fun PracticeSessionContent(
                 modifier = Modifier.fillMaxSize(),
             )
 
-            if (uiState.visualAnalysisMode != com.orato.app.domain.model.VisualAnalysisMode.FACE_ONLY) {
+            if (visualAnalysisMode != com.orato.app.domain.model.VisualAnalysisMode.FACE_ONLY) {
                 PoseSkeletonOverlay(
                     poseFrame = uiState.poseFrame,
                     mirrorHorizontally = true,
@@ -267,7 +270,7 @@ private fun PracticeSessionContent(
             }
 
             PracticeDebugPanel(
-                visualAnalysisMode = uiState.visualAnalysisMode,
+                visualAnalysisMode = visualAnalysisMode,
                 poseStatus = uiState.poseStatus,
                 poseStatusLabel = uiState.poseStatusLabel,
                 bodyMetrics = uiState.liveMetrics,
@@ -317,7 +320,7 @@ private fun PracticeSessionContent(
         Text(
             text = when {
                 uiState.isFinished -> "Sessione completata. Preparazione del report…"
-                uiState.isRunning -> "Parla con naturalezza. Mantieni lo sguardo verso la fotocamera."
+                uiState.isRunning -> practiceRunningInstruction(visualAnalysisMode)
                 else -> "Quando sei pronto, avvia i 90 secondi di pratica."
             },
             style = MaterialTheme.typography.bodyLarge,
@@ -405,4 +408,15 @@ private fun WhisperModelStatusRow(
             }
         }
     }
+}
+
+internal fun practiceRunningInstruction(
+    mode: com.orato.app.domain.model.VisualAnalysisMode,
+): String = when (mode) {
+    com.orato.app.domain.model.VisualAnalysisMode.BODY_ONLY ->
+        "Assicurati che il corpo sia ben visibile nell’inquadratura."
+    com.orato.app.domain.model.VisualAnalysisMode.FACE_ONLY ->
+        "Mantieni il viso visibile e guarda naturalmente verso la videocamera."
+    com.orato.app.domain.model.VisualAnalysisMode.BODY_AND_FACE ->
+        "Assicurati che viso, spalle e parte superiore del busto siano visibili."
 }
