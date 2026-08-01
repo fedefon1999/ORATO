@@ -319,20 +319,19 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                     audioFile = wav,
                     languageCode = SpeechConfig.DEFAULT_LANGUAGE_CODE,
                 )
+                // Ephemeral transcript → metrics only; do not retain recognized text.
+                val ephemeralTranscript = result.transcript
                 val metrics = SpeechMetricsCalculator.compute(
-                    transcript = result.transcript,
+                    transcript = ephemeralTranscript,
                     vadSpeechDurationMs = audioMetrics.speechDurationMs ?: 0L,
                     audio = audioMetrics,
                 )
-                val speech = if (metrics == null || result.transcript.isBlank()) {
+                val speech = if (metrics == null || ephemeralTranscript.isBlank()) {
                     SpeechSessionResult.Unavailable(SpeechConfig.METRICS_UNAVAILABLE_REPORT)
                 } else {
                     SpeechSessionResult.Ready(metrics)
                 }
-                updateSpeech(
-                    speech,
-                    TranscriptionState.Completed(result),
-                )
+                updateSpeech(speech, TranscriptionState.Completed)
             } catch (_: TranscriptionCancelledException) {
                 updateSpeech(
                     SpeechSessionResult.Unavailable(SpeechConfig.METRICS_UNAVAILABLE_REPORT),
