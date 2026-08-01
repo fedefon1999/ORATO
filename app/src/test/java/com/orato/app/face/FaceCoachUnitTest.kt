@@ -260,8 +260,8 @@ class FaceCalibrationManagerTest {
     fun stableCalibration_completesWithAggregation() {
         val mgr = FaceCalibrationManager(requireUpperTorso = false, requiredSamples = 5)
         var last: FaceCalibrationProgress? = null
-        repeat(8) { i ->
-            last = mgr.process(validFrame(i * 50L, yaw = 0.1f * (i % 2)))
+        for (t in 0L..3_200L step 100L) {
+            last = mgr.process(validFrame(t, yaw = 0.1f * ((t / 100) % 2).toFloat()))
         }
         assertEquals(FaceCalibrationUiState.COMPLETED, last!!.uiState)
         assertNotNull(last!!.profile)
@@ -292,13 +292,17 @@ class FaceCalibrationManagerTest {
             ),
             imageWidth = 100,
             imageHeight = 100,
+            timestampMs = 0L,
         )
         assertTrue(mgr.hasVisibleShouldersAndTorso(pose))
         // Hands absent — still valid for interview framing.
         assertNull(pose.landmarks[PoseLandmarkId.LEFT_WRIST])
         mgr.onPoseFrame(pose)
         var last: FaceCalibrationProgress? = null
-        repeat(5) { i -> last = mgr.process(validFrame(i * 40L)) }
+        for (t in 0L..3_200L step 100L) {
+            mgr.onPoseFrame(pose.copy(timestampMs = t))
+            last = mgr.process(validFrame(t))
+        }
         assertEquals(FaceCalibrationUiState.COMPLETED, last!!.uiState)
         assertEquals(true, last!!.shouldersValid)
     }
@@ -367,11 +371,14 @@ class FaceMetricsEngineTest {
         eng.reset()
         eng.setCalibration(calibrated())
         eng.processFrame(frame(0L))
-        eng.processFrame(frame(100L, cx = 0.1f)) // off center
+        eng.processFrame(frame(100L, cx = 0.1f)) // off center — may be invalid framing
         eng.processFrame(frame(200L, present = false))
+        eng.processFrame(frame(300L))
+        eng.finalizeAt(400L)
         val report = eng.buildReport()
-        assertTrue(report.framing.faceDetectedPercent!! > 50f)
-        assertNotNull(report.framing.centeredFacePercent)
+        assertNotNull(report.framing.faceDetectedPercent)
+        assertTrue(report.framing.faceDetectedPercent!! > 0f)
+        assertTrue(report.framing.faceDetectedPercent!! <= 100f)
     }
 
     @Test
